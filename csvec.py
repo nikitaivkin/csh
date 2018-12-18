@@ -1,13 +1,17 @@
 import math
 import numpy as np
+import copy
 LARGEPRIME = 2**61-1
 
 class CSVec(object):
     """ Simple Count Sketched Vector """
-    def __init__(self, c, r, d):
+    def __init__(self, c, r, d, doInitialize=True):
         self.r = r  # num of rows
         self.c = c  # num of columns
         self.d = d  # vector dimensionality
+
+        if not doInitialize:
+            return
 
         # initialize the sketch
         self.table = np.zeros((r, c))
@@ -48,11 +52,23 @@ class CSVec(object):
     def zero(self):
         self.table = np.zeros(self.table.shape)
 
+    def __deepcopy__(self, memodict={}):
+        # don't initialize new CSVec, since that will calculate bc,
+        # which is slow, even though we can just copy it over
+        # directly without recomputing it
+        newCSVec = CSVec(c=self.c, r=self.r, d=self.d, doInitialize=False)
+        newCSVec.table   = copy.deepcopy(self.table)
+        newCSVec.hashes  = copy.deepcopy(self.hashes)
+        newCSVec.signs   = copy.deepcopy(self.signs)
+        newCSVec.buckets = copy.deepcopy(self.buckets)
+        newCSVec.bc      = copy.deepcopy(self.bc)
+        return newCSVec
+
     def __add__(self, other):
-        msg = "Don't do this -- it takes too long to create a new " + \
-              "CSVec. Just CSVec.zero() this one if needed and then " + \
-              "use +="
-        raise NotImplementedError(msg)
+        # a bit roundabout in order to avoid initializing a new CSVec
+        returnCSVec = copy.deepcopy(self)
+        returnCSVec += other
+        return returnCSVec
 
     def __iadd__(self, other):
         if isinstance(other, CSVec):

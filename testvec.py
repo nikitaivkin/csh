@@ -9,9 +9,9 @@ class Timer:
     def __init__(self, name):
         print(name + "...")
     def __enter__(self):
-        self.startTime = time.clock()
+        self.startTime = time.time()
     def __exit__(self, et, ev, tb):
-        print("Time taken: {} sec".format(time.clock() - self.startTime))
+        print("Time taken: {} sec".format(time.time() - self.startTime))
 
 print("running a toy example - sketch size 5x1000, vector of dimension 10^6 to compress ")
 
@@ -46,3 +46,7 @@ with Timer("unsketching"):
     print(u)
     print(u[42], u[43], u[44])
     print(np.linalg.norm(u), np.linalg.norm(vec))
+
+with Timer("adding"):
+    newCSVec = csVec + csVec
+    print(newCSVec.findHH(5000))
