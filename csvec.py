@@ -36,14 +36,16 @@ class CS_VEC(object):
         #        print vec[self.bc[r][c]].shape, self.signs[r, self.bc[r][c]].shape 
                 self.table[r,c] += np.sum(vec[self.bc[r][c]] * self.signs[r, self.bc[r][c]]) 
 
-    def findHH(self, thr):
-        # returning estimation of frequency for item 
+    def findHH(self, thr): 
+        # next 5 lines ensure that we compute the median only for those who is heavy 
         tablefiltered = 1 * (self.table > thr) - 1*(self.table < - thr)
         est = np.zeros(self.d)       
         for r in range(self.r):
             est += tablefiltered[r,self.buckets[r,:]]*  self.signs[r,:]
         est =  1 * (est >= math.ceil(self.r/2.)) - 1*(est <= - math.ceil(self.r/2.))
+        # HHs- heavy coordinates 
         HHs = np.nonzero(est)[0]  
+        # estimating frequency for heavy coordinates  
         est = [] 
         for r in range(self.r):
             est.append(self.table[r,self.buckets[r,HHs]]*  self.signs[r,HHs]) 
