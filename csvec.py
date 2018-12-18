@@ -2,8 +2,8 @@ import math
 import numpy as np
 LARGEPRIME = 2**61-1
 
-class CS_VEC(object):
-    """ Simple Count Sketch """
+class CSVec(object):
+    """ Simple Count Sketched Vector """
     def __init__(self, c, r, d):
         self.r = r  # num of rows
         self.c = c  # num of columns
@@ -15,7 +15,13 @@ class CS_VEC(object):
         # initialize hashing functions for each row:
         # 2 random numbers for bucket hashes + 4 random numbers for
         # sign hashes
+        # maintain existing random state so we don't mess with
+        # the main module trying to set the random seed but still
+        # get reproducible hashes for the same value of r
+        rand_state = np.random.get_state()
+        np.random.seed(42)
         self.hashes = np.random.randint(0, LARGEPRIME, (r, 6)).astype(int)
+        np.random.set_state(rand_state)
 
         vec = np.arange(self.d).reshape((1, self.d))
 
