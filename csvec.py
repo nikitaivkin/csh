@@ -1,10 +1,9 @@
 import math
 import numpy as np
 LARGEPRIME = 2**61-1
-HIERARCHYBASE = 10
 
 class CS_VEC(object):
-    """ Simple Hieratchical Count Sketch """
+    """ Simple Count Sketch """
     def __init__(self, c, r, d):
         self.r = r  # num of rows
         self.c = c  # num of columns
