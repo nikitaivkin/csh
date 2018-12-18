@@ -100,6 +100,12 @@ class CSVec(object):
                        * self.signs[r,HHs])
         return HHs, np.median(np.array(est), 0)
 
+    def unSketch(self, thr):
+        hhs = self.findHH(thr)
+        unSketched = np.zeros(self.d)
+        unSketched[hhs[0]] = hhs[1]
+        return unSketched
+
     def l2estimate(self):
         # l2 norm esimation from the sketch
         return np.sqrt(np.median(np.sum(self.tables[0]**2, 1)))
