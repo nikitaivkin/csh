@@ -23,20 +23,20 @@ class CSVec(object):
         self.hashes = np.random.randint(0, LARGEPRIME, (r, 6)).astype(int)
         np.random.set_state(rand_state)
 
-        vec = np.arange(self.d).reshape((1, self.d))
+        tokens = np.arange(self.d).reshape((1, self.d))
 
         # computing sign hashes (4 wise independence)
         h1 = self.hashes[:,2:3]
         h2 = self.hashes[:,3:4]
         h3 = self.hashes[:,4:5]
         h4 = self.hashes[:,5:6]
-        self.signs = (((h1 * vec + h2) * vec + h3) * vec + h4)
+        self.signs = (((h1 * tokens + h2) * tokens + h3) * tokens + h4)
         self.signs = self.signs % LARGEPRIME % 2 * 2 - 1
 
         # computing bucket hashes  (2-wise independence)
         h1 = self.hashes[:,0:1]
         h2 = self.hashes[:,1:2]
-        self.buckets = (h1 * vec + h2) % LARGEPRIME % self.c
+        self.buckets = (h1 * tokens + h2) % LARGEPRIME % self.c
 
         #computing bucket-coordinate mapping
         self.bc = []
