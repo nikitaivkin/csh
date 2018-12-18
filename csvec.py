@@ -6,7 +6,6 @@ HIERARCHYBASE = 10
 class CS_VEC(object):
     """ Simple Hieratchical Count Sketch """
     def __init__(self, c, r, d):
-        np.random.seed(42)
         self.r = r  # num of rows
         self.c = c  # num of columns
         self.d = d  # vector dimensionality
