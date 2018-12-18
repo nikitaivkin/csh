@@ -45,15 +45,40 @@ class CSVec(object):
             for c in range(self.c):
                 self.bc[-1].append(np.nonzero(self.buckets[r,:] == c)[0])
 
+    def zero(self):
+        self.table = np.zeros(self.table.shape)
 
-    def updateVec(self, vec):
+    def __add__(self, other):
+        msg = "Don't do this -- it takes too long to create a new " + \
+              "CSVec. Just CSVec.zero() this one if needed and then " + \
+              "use +="
+        raise NotImplementedError(msg)
+
+    def __iadd__(self, other):
+        if isinstance(other, CSVec):
+            self.accumulateCSVec(other)
+        elif isinstance(other, np.ndarray):
+            self.accumulateVec(other)
+        else:
+            raise ValueError("Can't add this to a CSVec: {}".format(other))
+        return self
+
+    def accumulateVec(self, vec):
         # updating the sketch
+        assert(len(vec.shape) == 1 and vec.size == self.d)
         for r in range(self.r):
             for c in range(self.c):
                 #print(vec[self.bc[r][c]].shape,
                 #      self.signs[r, self.bc[r][c]].shape)
                 self.table[r,c] += np.sum(vec[self.bc[r][c]]
                                           * self.signs[r, self.bc[r][c]])
+
+    def accumulateCSVec(self, csVec):
+        # merges csh sketch into self
+        assert(self.d == csVec.d)
+        assert(self.c == csVec.c)
+        assert(self.r == csVec.r)
+        self.table += csVec.table
 
     def findHH(self, thr):
         # next 5 lines ensure that we compute the median
@@ -79,9 +104,6 @@ class CSVec(object):
         # l2 norm esimation from the sketch
         return np.sqrt(np.median(np.sum(self.tables[0]**2, 1)))
 
-    def merge(self, csh):
-        # merges csh sketch into self
-        self.table += csh.table
 
 #    def vec2bs(self, vec):
 #        vec.shape = 1, len(vec)
