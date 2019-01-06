@@ -124,7 +124,7 @@ class CSVec(object):
 
     def l2estimate(self):
         # l2 norm esimation from the sketch
-        return np.sqrt(np.median(np.sum(self.tables[0]**2, 1)))
+        return np.sqrt(np.median(np.sum(self.table**2, 1)))
 
 
 #    def vec2bs(self, vec):
