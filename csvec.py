@@ -5,10 +5,11 @@ LARGEPRIME = 2**61-1
 
 class CSVec(object):
     """ Simple Count Sketched Vector """
-    def __init__(self, c, r, d, doInitialize=True):
+    def __init__(self, d, c, r, epsilon, doInitialize=True):
         self.r = r  # num of rows
         self.c = c  # num of columns
         self.d = d  # vector dimensionality
+        self.epsilon = epsilon # threshold for unsketching
 
         if not doInitialize:
             return
@@ -56,7 +57,8 @@ class CSVec(object):
         # don't initialize new CSVec, since that will calculate bc,
         # which is slow, even though we can just copy it over
         # directly without recomputing it
-        newCSVec = CSVec(c=self.c, r=self.r, d=self.d, doInitialize=False)
+        newCSVec = CSVec(d=self.d, c=self.c, r=self.r,
+                         epsilon=self.epsilon, doInitialize=False)
         newCSVec.table   = copy.deepcopy(self.table)
         newCSVec.hashes  = copy.deepcopy(self.hashes)
         newCSVec.signs   = copy.deepcopy(self.signs)
@@ -116,8 +118,8 @@ class CSVec(object):
                        * self.signs[r,HHs])
         return HHs, np.median(np.array(est), 0)
 
-    def unSketch(self, thr):
-        hhs = self.findHH(thr)
+    def unSketch(self):
+        hhs = self.findHH(self.epsilon * self.l2estimate())
         unSketched = np.zeros(self.d)
         unSketched[hhs[0]] = hhs[1]
         return unSketched
