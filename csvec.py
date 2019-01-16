@@ -6,10 +6,11 @@ LARGEPRIME = 2**61-1
 
 class CSVec(object):
     """ Simple Count Sketched Vector """
-    def __init__(self, d, c, r, epsilon, doInitialize=True):
-        self.r = r  # num of rows
-        self.c = c  # num of columns
-        self.d = d  # vector dimensionality
+    def __init__(self, d, c, r, k=None, epsilon=None, doInitialize=True):
+        self.r = r # num of rows
+        self.c = c # num of columns
+        self.d = d # vector dimensionality
+        self.k = k # threshold for unsketching
         self.epsilon = epsilon # threshold for unsketching
 
         if not doInitialize:
@@ -62,7 +63,8 @@ class CSVec(object):
         # which is slow, even though we can just copy it over
         # directly without recomputing it
         newCSVec = CSVec(d=self.d, c=self.c, r=self.r,
-                         epsilon=self.epsilon, doInitialize=False)
+                         k=self.k, epsilon=self.epsilon,
+                         doInitialize=False)
         newCSVec.table   = copy.deepcopy(self.table)
         newCSVec.hashes  = copy.deepcopy(self.hashes)
         newCSVec.signs   = copy.deepcopy(self.signs)
@@ -129,9 +131,52 @@ class CSVec(object):
         assert(self.r == csVec.r)
         self.table += csVec.table
 
-    def findHH(self, thr):
-        # next 5 lines ensure that we compute the median
-        # only for those who is heavy
+    def _findHHK(self, k):
+        assert(k is not None)
+        vals = self._findValues(np.arange(self.d))
+        HHs = np.argsort(vals**2)[-k:]
+        return HHs, vals[HHs]
+
+        # below is a potentially faster (but broken ha) version
+        # of the code above. Leaving it here for now in case it
+        # makes any speed difference later, but I kinda doubt it...
+
+        # set a conservative threshold to quickly rule out
+        # most possible heavy hitters
+        thr = 0.1 / np.sqrt(self.c)
+        mediumHitters = np.array([])
+        while True:
+            mediumHitters, mediumHittersVals = self._findHHThr(thr)
+            if mediumHitters.size >= k:
+                break
+
+            # if mediumHitters.size < k even with this threshold,
+            # use an even lower threshold next iteration
+            # and warn the user
+            print("THRESHOLD TOO HIGH!!")
+            thr *= 0.1
+
+        # get HHs from the medium hitters
+        percentile = 100 * (1 - k / mediumHitters.size)
+        cutoff = np.percentile(mediumHittersVals**2, percentile)
+        HHs = np.where(mediumHittersVals**2 >= cutoff)[0]
+
+        # in case there are multiple values of mediumHittersVals
+        # exactly equal to cutoff, now take the topk by sorting
+        if len(HHs) != k:
+            assert(len(HHs) > k)
+            HHs = np.argsort(mediumHittersVals[HHs]**2)[:k]
+        HHValues = mediumHittersVals[HHs]
+
+        return HHs, HHValues
+
+    def _findHHThr(self, thr):
+        assert(thr is not None)
+        # to figure out which items are heavy hitters, check whether
+        # self.table exceeds thr (in magnitude) in at least r/2 of
+        # the rows. These elements are exactly those for which the median
+        # exceeds thr, but computing the median is expensive, so only
+        # calculate it after we identify which ones are heavy
         tablefiltered = 1 * (self.table > thr) - 1 * (self.table < -thr)
         est = np.zeros(self.d)
         for r in range(self.r):
@@ -139,18 +184,45 @@ class CSVec(object):
         est = (  1 * (est >=  math.ceil(self.r/2.))
                - 1 * (est <= -math.ceil(self.r/2.)))
 
-        # HHs- heavy coordinates
+        # HHs - heavy coordinates
         HHs = np.nonzero(est)[0]
+        return HHs, self._findValues(HHs)
 
-        # estimating frequency for heavy coordinates
-        est = []
+
+    def _findValues(self, coords):
+        # estimating frequency of input coordinates
+        vals = []
         for r in range(self.r):
-            est.append(self.table[r,self.buckets[r,HHs]]
-                       * self.signs[r,HHs])
-        return HHs, np.median(np.array(est), 0)
+            vals.append(self.table[r, self.buckets[r, coords]]
+                      * self.signs[r, coords])
+
+        # take the median over rows in the sketch
+        return np.median(np.array(vals), axis=0)
+
+    def findHHs(self, k=None, thr=None):
+        assert((k is None) != (thr is None))
+        if k is not None:
+            return self._findHHK(k)
+        else:
+            return self._findHHThr(thr)
 
     def unSketch(self):
-        hhs = self.findHH(self.epsilon * self.l2estimate())
+        # either self.epsilon or self.k might be specified
+        # (but not both). Act accordingly
+        if self.epsilon is None:
+            thr = None
+        else:
+            thr = self.epsilon * self.l2estimate()
+
+        hhs = self.findHHs(k=self.k, thr=thr)
+
+        if self.k is not None:
+            assert(len(hhs[1]) == self.k)
+        if self.epsilon is not None:
+            assert((hhs[1] < thr).sum() == 0)
+
+        # the unsketched vector is 0 everywhere except for HH
+        # coordinates, which are set to the HH values
         unSketched = np.zeros(self.d)
         unSketched[hhs[0]] = hhs[1]
         return unSketched
@@ -158,33 +230,4 @@ class CSVec(object):
     def l2estimate(self):
         # l2 norm esimation from the sketch
         return np.sqrt(np.median(np.sum(self.table**2, 1)))
-
-
-#    def vec2bs(self, vec):
-#        vec.shape = 1, len(vec)
-#        # computing bucket hashes  (2-wise independence)
-#        buckets = (self.hashes[:,0:1]*vec + self.hashes[:,1:2])%LARGEPRIME%self.c
-#        # computing sign hashes (4 wise independence)
-#        signs = (((self.hashes[:,2:3]*vec + self.hashes[:,3:4])*vec + self.hashes[:,4:5])*vec + self.hashes[:,5:6])%LARGEPRIME%2 * 2 - 1
-#        vec.shape =  vec.shape[1]
-#        return buckets, signs
-#
-#    def updateVec(self, vec):
-#        # computing all hashes \\ can potentially precompute and store
-#        buckets, signs = self.vec2bs(np.arange(self.d))
-#        # updating the sketch
-#        print self.table
-#        for r in range(self.r):
-#            self.table[r,buckets[r,:]] += vec * signs[r,:]
-#        print self.table
-
-#    def evalFreq(self):
-#        # computing hashes
-#        buckets, signs = self.vec2bs(np.arange(self.d))
-#        # returning estimation of frequency for item
-#        estimates = [self.table[r,buckets[r,:]] * signs[r,:] for r in range(self.r)]
-#        print self.table#[r,buckets[r,:]]
-#        print estimates
-#        #return np.median(estimates,0)
-#
 
