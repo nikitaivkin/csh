@@ -111,7 +111,7 @@ class CSVec(object):
                - 1 * (est <= -math.ceil(self.r/2.)).float())
         
         # HHs- heavy coordinates
-        HHs = torch.nonzero(est)[0]
+        HHs = torch.nonzero(est)
 
         # estimating frequency for heavy coordinates
         est = []
@@ -123,7 +123,6 @@ class CSVec(object):
 
     def unSketch(self):
         hhs = self.findHH(self.epsilon * self.l2estimate())
-        print(hhs)
         unSketched = np.zeros(self.d)
         unSketched[hhs[0]] = hhs[1]
         return unSketched
