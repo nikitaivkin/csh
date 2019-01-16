@@ -1,15 +1,18 @@
 import math
 import numpy as np
 import copy
+import torch
 
 LARGEPRIME = 2**61-1
+device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 class CSVec(object):
     """ Simple Count Sketched Vector """
     def __init__(self, d, c, r, k=None, epsilon=None, doInitialize=True):
         self.r = r # num of rows
         self.c = c # num of columns
-        self.d = d # vector dimensionality
+        # need int() here b/c annoying np returning np.int64...
+        self.d = int(d) # vector dimensionality
         self.k = k # threshold for unsketching
         self.epsilon = epsilon # threshold for unsketching
 
@@ -17,7 +20,7 @@ class CSVec(object):
             return
 
         # initialize the sketch
-        self.table = np.zeros((r, c))
+        self.table = torch.zeros((r, c), device=device)
 
         # initialize hashing functions for each row:
         # 2 random numbers for bucket hashes + 4 random numbers for
@@ -25,38 +28,32 @@ class CSVec(object):
         # maintain existing random state so we don't mess with
         # the main module trying to set the random seed but still
         # get reproducible hashes for the same value of r
-        rand_state = np.random.get_state()
-        np.random.seed(42)
-        self.hashes = np.random.randint(0, LARGEPRIME, (r, 6)).astype(int)
-        np.random.set_state(rand_state)
+        rand_state = torch.random.get_rng_state()
+        torch.random.manual_seed(42)
+        self.hashes = torch.randint(0, LARGEPRIME, (r, 6),
+                                    dtype=torch.int64, device=device)
+        torch.random.set_rng_state(rand_state)
 
-        tokens = np.arange(self.d).reshape((1, self.d))
+        tokens = torch.arange(self.d, dtype=torch.int64, device=device)
+        tokens = tokens.reshape((1, self.d))
 
         # computing sign hashes (4 wise independence)
         h1 = self.hashes[:,2:3]
         h2 = self.hashes[:,3:4]
         h3 = self.hashes[:,4:5]
         h4 = self.hashes[:,5:6]
-        self.signs = (((h1 * tokens + h2) * tokens + h3) * tokens + h4)
-        self.signs = self.signs % LARGEPRIME % 2 * 2 - 1
+        self.signs = h1 * tokens
+        self.signs.add_(h2).mul_(tokens).add_(h3).mul_(tokens).add_(h4)
+        #self.signs = (((h1 * tokens + h2) * tokens + h3) * tokens + h4)
+        self.signs = (self.signs % LARGEPRIME % 2).float().mul_(2).add_(-1)
 
         # computing bucket hashes  (2-wise independence)
         h1 = self.hashes[:,0:1]
         h2 = self.hashes[:,1:2]
         self.buckets = (h1 * tokens + h2) % LARGEPRIME % self.c
 
-        # computing bucket-coordinate mapping
-        """
-        # CORRECTNESS CHECK
-        self.bc = []
-        for r in range(self.r):
-            self.bc.append([])
-            for c in range(self.c):
-                self.bc[-1].append(np.nonzero(self.buckets[r,:] == c)[0])
-        """
-
     def zero(self):
-        self.table = np.zeros(self.table.shape)
+        self.table.zero_()
 
     def __deepcopy__(self, memodict={}):
         # don't initialize new CSVec, since that will calculate bc,
@@ -82,47 +79,19 @@ class CSVec(object):
     def __iadd__(self, other):
         if isinstance(other, CSVec):
             self.accumulateCSVec(other)
-        elif isinstance(other, np.ndarray):
+        elif isinstance(other, torch.Tensor):
             self.accumulateVec(other)
         else:
             raise ValueError("Can't add this to a CSVec: {}".format(other))
         return self
 
-    #@profile
     def accumulateVec(self, vec):
         # updating the sketch
-        assert(len(vec.shape) == 1 and vec.size == self.d)
-
-        # CORRECTNESS CHECK
-        #table2 = copy.deepcopy(self.table)
-
+        assert(len(vec.size()) == 1 and vec.size()[0] == self.d)
         for r in range(self.r):
-            # this is incorrect, since numpy only does one addition even
-            # if there are multiple copies of the same index in buckets[r,:]
-            #self.table[r, self.buckets[r,:]] += self.signs[r,:] * vec
-
-            # this works but is slower than a python for loop
-            #np.add.at(self.table[r,:], self.buckets[r,:], self.signs[r,:] * vec)
-
-            # this works and is about 4x faster than the python loop below
-            self.table[r,:] += np.bincount(self.buckets[r,:],
+            self.table[r,:] += torch.bincount(input=self.buckets[r,:],
                                            weights=self.signs[r,:] * vec,
                                            minlength=self.c)
-
-            """
-            # CORRECTNESS CHECK (this is the original code)
-            for c in range(self.c):
-                tmp1 = vec[self.bc[r][c]]
-                tmp2 = self.signs[r, self.bc[r][c]]
-                tmp = tmp1 * tmp2
-                tmp = np.sum(tmp)
-                table2[r,c] += tmp
-                #^^ is an expanded version of: self.table[r,c] += np.sum(self.signs[r, self.bc[r][c]] * vec[self.bc[r][c]])
-            """
-
-        # CORRECTNESS CHECK (show some arbitrary elements of self.table)
-        #print("fast", self.table[3, :4])
-        #print("slow", table2[3, :4])
 
     def accumulateCSVec(self, csVec):
         # merges csh sketch into self
@@ -133,13 +102,14 @@ class CSVec(object):
 
     def _findHHK(self, k):
         assert(k is not None)
-        vals = self._findValues(np.arange(self.d))
-        HHs = np.argsort(vals**2)[-k:]
+        vals = self._findValues(torch.arange(self.d, device=device))
+        HHs = torch.sort(vals**2)[1][-k:]
         return HHs, vals[HHs]
 
         # below is a potentially faster (but broken ha) version
         # of the code above. Leaving it here for now in case it
         # makes any speed difference later, but I kinda doubt it...
+        # also it isn't even ported to pytorch
 
         # set a conservative threshold to quickly rule out
         # most possible heavy hitters
@@ -177,27 +147,27 @@ class CSVec(object):
         # the rows. These elements are exactly those for which the median
         # exceeds thr, but computing the median is expensive, so only
         # calculate it after we identify which ones are heavy
-        tablefiltered = 1 * (self.table > thr) - 1 * (self.table < -thr)
-        est = np.zeros(self.d)
+        tablefiltered = (  (self.table >  thr).float()
+                         - (self.table < -thr).float())
+        est = torch.zeros(self.d, device=device) #XXX .float()?
         for r in range(self.r):
             est += tablefiltered[r,self.buckets[r,:]] * self.signs[r,:]
-        est = (  1 * (est >=  math.ceil(self.r/2.))
-               - 1 * (est <= -math.ceil(self.r/2.)))
+        est = (  (est >=  math.ceil(self.r/2.)).float()
+               - (est <= -math.ceil(self.r/2.)).float())
 
         # HHs - heavy coordinates
-        HHs = np.nonzero(est)[0]
+        HHs = torch.nonzero(est)
         return HHs, self._findValues(HHs)
-
 
     def _findValues(self, coords):
         # estimating frequency of input coordinates
-        vals = []
+        vals = torch.zeros(self.r, coords.size()[0], device=device)
         for r in range(self.r):
-            vals.append(self.table[r, self.buckets[r, coords]]
-                      * self.signs[r, coords])
+            vals[r] = (self.table[r, self.buckets[r, coords]]
+                       * self.signs[r, coords])
 
         # take the median over rows in the sketch
-        return np.median(np.array(vals), axis=0)
+        return vals.median(dim=0)[0]
 
     def findHHs(self, k=None, thr=None):
         assert((k is None) != (thr is None))
@@ -223,11 +193,11 @@ class CSVec(object):
 
         # the unsketched vector is 0 everywhere except for HH
         # coordinates, which are set to the HH values
-        unSketched = np.zeros(self.d)
+        unSketched = torch.zeros(self.d, device=device)
         unSketched[hhs[0]] = hhs[1]
         return unSketched
 
     def l2estimate(self):
         # l2 norm esimation from the sketch
-        return np.sqrt(np.median(np.sum(self.table**2, 1)))
+        return np.sqrt(torch.median(torch.sum(self.table**2,1)).item())
 
