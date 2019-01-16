@@ -1,6 +1,7 @@
 import math
 import numpy as np
 import copy
+import torch
 
 LARGEPRIME = 2**61-1
 
@@ -27,9 +28,11 @@ class CSVec(object):
         rand_state = np.random.get_state()
         np.random.seed(42)
         self.hashes = np.random.randint(0, LARGEPRIME, (r, 6)).astype(int)
+        self.hashes = torch.from_numpy(self.hashes).cuda()
         np.random.set_state(rand_state)
 
         tokens = np.arange(self.d).reshape((1, self.d))
+        tokens = torch.from_numpy(tokens).cuda()
 
         # computing sign hashes (4 wise independence)
         h1 = self.hashes[:,2:3]
@@ -37,50 +40,44 @@ class CSVec(object):
         h3 = self.hashes[:,4:5]
         h4 = self.hashes[:,5:6]
         self.signs = (((h1 * tokens + h2) * tokens + h3) * tokens + h4)
-        self.signs = self.signs % LARGEPRIME % 2 * 2 - 1
+        self.signs = (self.signs % LARGEPRIME % 2 * 2 - 1).float()
 
         # computing bucket hashes  (2-wise independence)
         h1 = self.hashes[:,0:1]
         h2 = self.hashes[:,1:2]
         self.buckets = (h1 * tokens + h2) % LARGEPRIME % self.c
 
-        # computing bucket-coordinate mapping
-        """
-        # CORRECTNESS CHECK
-        self.bc = []
-        for r in range(self.r):
-            self.bc.append([])
-            for c in range(self.c):
-                self.bc[-1].append(np.nonzero(self.buckets[r,:] == c)[0])
-        """
+        self.table = torch.from_numpy(self.table).float().cuda()
 
     def zero(self):
-        self.table = np.zeros(self.table.shape)
+        self.table[] = np.zeros(self.table.shape)
 
-    def __deepcopy__(self, memodict={}):
-        # don't initialize new CSVec, since that will calculate bc,
-        # which is slow, even though we can just copy it over
-        # directly without recomputing it
-        newCSVec = CSVec(d=self.d, c=self.c, r=self.r,
-                         epsilon=self.epsilon, doInitialize=False)
-        newCSVec.table   = copy.deepcopy(self.table)
-        newCSVec.hashes  = copy.deepcopy(self.hashes)
-        newCSVec.signs   = copy.deepcopy(self.signs)
-        newCSVec.buckets = copy.deepcopy(self.buckets)
-        # CORRECTNESS CHECK
-        #newCSVec.bc      = copy.deepcopy(self.bc)
-        return newCSVec
-
-    def __add__(self, other):
-        # a bit roundabout in order to avoid initializing a new CSVec
-        returnCSVec = copy.deepcopy(self)
-        returnCSVec += other
-        return returnCSVec
+#    # Nikita:  __deepcopy__ is the only used in __add__, 
+#    #         therefore redundunt, we can have just __iadd__,
+    # def __deepcopy__(self, memodict={}):
+    #     # don't initialize new CSVec, since that will calculate bc,
+    #     # which is slow, even though we can just copy it over
+    #     # directly without recomputing it
+    #     newCSVec = CSVec(d=self.d, c=self.c, r=self.r,
+    #                      epsilon=self.epsilon, doInitialize=False)
+    #     newCSVec.table   = copy.deepcopy(self.table)
+    #     newCSVec.hashes  = copy.deepcopy(self.hashes)
+    #     newCSVec.signs   = copy.deepcopy(self.signs)
+    #     newCSVec.buckets = copy.deepcopy(self.buckets)
+    #     # CORRECTNESS CHECK
+    #     #newCSVec.bc      = copy.deepcopy(self.bc)
+    #     return newCSVec
+#    # Nikita: redundunt, we can have just __iadd__ 
+    # def __add__(self, other):
+    #     # a bit roundabout in order to avoid initializing a new CSVec
+    #     returnCSVec = copy.deepcopy(self)
+    #     returnCSVec += other
+    #     return returnCSVec
 
     def __iadd__(self, other):
-        if isinstance(other, CSVec):
+        if isinstance(other, ptCSVec):
             self.accumulateCSVec(other)
-        elif isinstance(other, np.ndarray):
+        elif isinstance(other, torch.Tensor):
             self.accumulateVec(other)
         else:
             raise ValueError("Can't add this to a CSVec: {}".format(other))
@@ -89,38 +86,12 @@ class CSVec(object):
     #@profile
     def accumulateVec(self, vec):
         # updating the sketch
-        assert(len(vec.shape) == 1 and vec.size == self.d)
-
-        # CORRECTNESS CHECK
-        #table2 = copy.deepcopy(self.table)
-
+        # Nikita: this assert need to be fixed
+        # assert(len(vec.shape) == 1 and vec.size == self.d)
         for r in range(self.r):
-            # this is incorrect, since numpy only does one addition even
-            # if there are multiple copies of the same index in buckets[r,:]
-            #self.table[r, self.buckets[r,:]] += self.signs[r,:] * vec
-
-            # this works but is slower than a python for loop
-            #np.add.at(self.table[r,:], self.buckets[r,:], self.signs[r,:] * vec)
-
-            # this works and is about 4x faster than the python loop below
-            self.table[r,:] += np.bincount(self.buckets[r,:],
+            self.table[r,:] += torch.bincount(input=self.buckets[r,:],
                                            weights=self.signs[r,:] * vec,
                                            minlength=self.c)
-
-            """
-            # CORRECTNESS CHECK (this is the original code)
-            for c in range(self.c):
-                tmp1 = vec[self.bc[r][c]]
-                tmp2 = self.signs[r, self.bc[r][c]]
-                tmp = tmp1 * tmp2
-                tmp = np.sum(tmp)
-                table2[r,c] += tmp
-                #^^ is an expanded version of: self.table[r,c] += np.sum(self.signs[r, self.bc[r][c]] * vec[self.bc[r][c]])
-            """
-
-        # CORRECTNESS CHECK (show some arbitrary elements of self.table)
-        #print("fast", self.table[3, :4])
-        #print("slow", table2[3, :4])
 
     def accumulateCSVec(self, csVec):
         # merges csh sketch into self
@@ -132,32 +103,34 @@ class CSVec(object):
     def findHH(self, thr):
         # next 5 lines ensure that we compute the median
         # only for those who is heavy
-        tablefiltered = 1 * (self.table > thr) - 1 * (self.table < -thr)
-        est = np.zeros(self.d)
+        tablefiltered = (self.table > thr).float() - (self.table < -thr).float()
+        est = torch.zeros(self.d, device=torch.device("cuda")).float()
         for r in range(self.r):
             est += tablefiltered[r,self.buckets[r,:]] * self.signs[r,:]
-        est = (  1 * (est >=  math.ceil(self.r/2.))
-               - 1 * (est <= -math.ceil(self.r/2.)))
-
+        est = (  1 * (est >=  math.ceil(self.r/2.)).float()
+               - 1 * (est <= -math.ceil(self.r/2.)).float())
+        
         # HHs- heavy coordinates
-        HHs = np.nonzero(est)[0]
+        HHs = torch.nonzero(est)[0]
 
         # estimating frequency for heavy coordinates
         est = []
         for r in range(self.r):
-            est.append(self.table[r,self.buckets[r,HHs]]
-                       * self.signs[r,HHs])
-        return HHs, np.median(np.array(est), 0)
+            est.append((self.table[r,self.buckets[r,HHs]]
+                        *self.signs[r,HHs]).cpu().numpy())
+            
+        return HHs.cpu().numpy(), np.median(np.array(est), 0)
 
     def unSketch(self):
         hhs = self.findHH(self.epsilon * self.l2estimate())
+        print(hhs)
         unSketched = np.zeros(self.d)
         unSketched[hhs[0]] = hhs[1]
         return unSketched
 
     def l2estimate(self):
         # l2 norm esimation from the sketch
-        return np.sqrt(np.median(np.sum(self.table**2, 1)))
+        return np.sqrt(torch.median(torch.sum(self.table**2,1)).item())
 
 
 #    def vec2bs(self, vec):
