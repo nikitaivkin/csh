@@ -149,7 +149,7 @@ class CSVec(object):
         # calculate it after we identify which ones are heavy
         tablefiltered = (  (self.table >  thr).float()
                          - (self.table < -thr).float())
-        est = torch.zeros(self.d, device=device) #XXX .float()?
+        est = torch.zeros(self.d, device=device)
         for r in range(self.r):
             est += tablefiltered[r,self.buckets[r,:]] * self.signs[r,:]
         est = (  (est >=  math.ceil(self.r/2.)).float()
