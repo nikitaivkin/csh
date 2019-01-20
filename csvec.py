@@ -55,11 +55,6 @@ class CSVec(object):
     def zero(self):
         self.table.zero_()
 
-    def zeroCoords(self, coords):
-        coords = coords.to(device)
-        for r in range(self.r):
-            self.table[r, self.buckets[r, coords]] = 0
-
     def __deepcopy__(self, memodict={}):
         # don't initialize new CSVec, since that will calculate bc,
         # which is slow, even though we can just copy it over
