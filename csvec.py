@@ -6,9 +6,13 @@ import torch
 LARGEPRIME = 2**61-1
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
+cache = {}
+
 class CSVec(object):
     """ Simple Count Sketched Vector """
     def __init__(self, d, c, r, k=None, epsilon=None, doInitialize=True):
+        global cache
+
         self.r = r # num of rows
         self.c = c # num of columns
         # need int() here b/c annoying np returning np.int64...
@@ -21,6 +25,14 @@ class CSVec(object):
 
         # initialize the sketch
         self.table = torch.zeros((r, c), device=device)
+
+        # if we already have these, don't do the same computation
+        # again (wasting memory storing the same data several times)
+        if (d, c, r) in cache:
+            self.hashes = cache[(d, c, r)]["hashes"]
+            self.signs = cache[(d, c, r)]["signs"]
+            self.buckets = cache[(d, c, r)]["buckets"]
+            return
 
         # initialize hashing functions for each row:
         # 2 random numbers for bucket hashes + 4 random numbers for
@@ -52,6 +64,10 @@ class CSVec(object):
         h2 = self.hashes[:,1:2]
         self.buckets = (h1 * tokens + h2) % LARGEPRIME % self.c
 
+        cache[(d, c, r)] = {"hashes": self.hashes,
+                            "signs": self.signs,
+                            "buckets": self.buckets}
+
     def zero(self):
         self.table.zero_()
 
@@ -63,11 +79,13 @@ class CSVec(object):
                          k=self.k, epsilon=self.epsilon,
                          doInitialize=False)
         newCSVec.table   = copy.deepcopy(self.table)
-        newCSVec.hashes  = copy.deepcopy(self.hashes)
-        newCSVec.signs   = copy.deepcopy(self.signs)
-        newCSVec.buckets = copy.deepcopy(self.buckets)
-        # CORRECTNESS CHECK
-        #newCSVec.bc      = copy.deepcopy(self.bc)
+        global cache
+        newCSVec.hashes = cache[(self.d, self.c, self.r)]["hashes"]
+        newCSVec.signs = cache[(self.d, self.c, self.r)]["signs"]
+        newCSVec.buckets = cache[(self.d, self.c, self.r)]["buckets"]
+        #newCSVec.hashes  = copy.deepcopy(self.hashes)
+        #newCSVec.signs   = copy.deepcopy(self.signs)
+        #newCSVec.buckets = copy.deepcopy(self.buckets)
         return newCSVec
 
     def __add__(self, other):
