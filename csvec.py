@@ -10,15 +10,13 @@ cache = {}
 
 class CSVec(object):
     """ Simple Count Sketched Vector """
-    def __init__(self, d, c, r, k=None, epsilon=None, doInitialize=True):
+    def __init__(self, d, c, r, doInitialize=True):
         global cache
 
         self.r = r # num of rows
         self.c = c # num of columns
         # need int() here b/c annoying np returning np.int64...
         self.d = int(d) # vector dimensionality
-        self.k = k # threshold for unsketching
-        self.epsilon = epsilon # threshold for unsketching
 
         if not doInitialize:
             return
@@ -76,7 +74,6 @@ class CSVec(object):
         # which is slow, even though we can just copy it over
         # directly without recomputing it
         newCSVec = CSVec(d=self.d, c=self.c, r=self.r,
-                         k=self.k, epsilon=self.epsilon,
                          doInitialize=False)
         newCSVec.table   = copy.deepcopy(self.table)
         global cache
@@ -194,19 +191,19 @@ class CSVec(object):
         else:
             return self._findHHThr(thr)
 
-    def unSketch(self):
-        # either self.epsilon or self.k might be specified
+    def unSketch(self, k=None, epsilon=None):
+        # either epsilon or k might be specified
         # (but not both). Act accordingly
-        if self.epsilon is None:
+        if epsilon is None:
             thr = None
         else:
-            thr = self.epsilon * self.l2estimate()
+            thr = epsilon * self.l2estimate()
 
-        hhs = self.findHHs(k=self.k, thr=thr)
+        hhs = self.findHHs(k=k, thr=thr)
 
-        if self.k is not None:
-            assert(len(hhs[1]) == self.k)
-        if self.epsilon is not None:
+        if k is not None:
+            assert(len(hhs[1]) == k)
+        if epsilon is not None:
             assert((hhs[1] < thr).sum() == 0)
 
         # the unsketched vector is 0 everywhere except for HH
