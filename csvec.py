@@ -79,7 +79,7 @@ class CSVec(object):
         # which is slow, even though we can just copy it over
         # directly without recomputing it
         newCSVec = CSVec(d=self.d, c=self.c, r=self.r,
-                         doInitialize=False)
+                         doInitialize=False, device=self.device)
         newCSVec.table   = copy.deepcopy(self.table)
         global cache
         newCSVec.hashes = cache[(self.d, self.c, self.r)]["hashes"]
