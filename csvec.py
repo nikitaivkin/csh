@@ -4,13 +4,12 @@ import copy
 import torch
 
 LARGEPRIME = 2**61-1
-device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 cache = {}
 
 class CSVec(object):
     """ Simple Count Sketched Vector """
-    def __init__(self, d, c, r, doInitialize=True):
+    def __init__(self, d, c, r, doInitialize=True, device=None):
         global cache
 
         self.r = r # num of rows
@@ -18,11 +17,17 @@ class CSVec(object):
         # need int() here b/c annoying np returning np.int64...
         self.d = int(d) # vector dimensionality
 
+        if device is None:
+            device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        else:
+            assert(device == "cuda" or device == "cpu")
+        self.device = device
+
         if not doInitialize:
             return
 
         # initialize the sketch
-        self.table = torch.zeros((r, c), device=device)
+        self.table = torch.zeros((r, c), device=self.device)
 
         # if we already have these, don't do the same computation
         # again (wasting memory storing the same data several times)
@@ -41,10 +46,10 @@ class CSVec(object):
         rand_state = torch.random.get_rng_state()
         torch.random.manual_seed(42)
         self.hashes = torch.randint(0, LARGEPRIME, (r, 6),
-                                    dtype=torch.int64, device=device)
+                                    dtype=torch.int64, device=self.device)
         torch.random.set_rng_state(rand_state)
 
-        tokens = torch.arange(self.d, dtype=torch.int64, device=device)
+        tokens = torch.arange(self.d, dtype=torch.int64, device=self.device)
         tokens = tokens.reshape((1, self.d))
 
         # computing sign hashes (4 wise independence)
@@ -117,7 +122,7 @@ class CSVec(object):
 
     def _findHHK(self, k):
         assert(k is not None)
-        vals = self._findValues(torch.arange(self.d, device=device))
+        vals = self._findValues(torch.arange(self.d, device=self.device))
         HHs = torch.sort(vals**2)[1][-k:]
         return HHs, vals[HHs]
 
@@ -164,7 +169,7 @@ class CSVec(object):
         # calculate it after we identify which ones are heavy
         tablefiltered = (  (self.table >  thr).float()
                          - (self.table < -thr).float())
-        est = torch.zeros(self.d, device=device)
+        est = torch.zeros(self.d, device=self.device)
         for r in range(self.r):
             est += tablefiltered[r,self.buckets[r,:]] * self.signs[r,:]
         est = (  (est >=  math.ceil(self.r/2.)).float()
@@ -176,7 +181,7 @@ class CSVec(object):
 
     def _findValues(self, coords):
         # estimating frequency of input coordinates
-        vals = torch.zeros(self.r, coords.size()[0], device=device)
+        vals = torch.zeros(self.r, coords.size()[0], device=self.device)
         for r in range(self.r):
             vals[r] = (self.table[r, self.buckets[r, coords]]
                        * self.signs[r, coords])
@@ -208,7 +213,7 @@ class CSVec(object):
 
         # the unsketched vector is 0 everywhere except for HH
         # coordinates, which are set to the HH values
-        unSketched = torch.zeros(self.d, device=device)
+        unSketched = torch.zeros(self.d, device=self.device)
         unSketched[hhs[0]] = hhs[1]
         return unSketched
 
