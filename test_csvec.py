@@ -1,8 +1,9 @@
 import math
 import numpy as np
 import copy
+import pdb
 
-from csvec import CSVec
+from countSketch.csvec import CSVec
 import torch
 device="cuda"
 
@@ -10,11 +11,12 @@ LARGEPRIME = 2**61-1
 
 class SlowCSVec(object):
     """ Simple Count Sketched Vector """
-    def __init__(self, d, c, r, epsilon, doInitialize=True):
+    def __init__(self, d, c, r, epsilon, k=None, doInitialize=True):
         self.r = r  # num of rows
         self.c = c  # num of columns
         self.d = d  # vector dimensionality
         self.epsilon = epsilon # threshold for unsketching
+        self.k = k
 
         if not doInitialize:
             return
@@ -71,8 +73,8 @@ class SlowCSVec(object):
         # don't initialize new CSVec, since that will calculate bc,
         # which is slow, even though we can just copy it over
         # directly without recomputing it
-        newCSVec = CSVec(d=self.d, c=self.c, r=self.r,
-                         epsilon=self.epsilon, doInitialize=False)
+        newCSVec = SlowCSVec(d=self.d, c=self.c, r=self.r,
+                         epsilon=self.epsilon, k=self.k, doInitialize=False)
         newCSVec.table   = copy.deepcopy(self.table)
         newCSVec.hashes  = copy.deepcopy(self.hashes)
         newCSVec.signs   = copy.deepcopy(self.signs)
@@ -87,7 +89,7 @@ class SlowCSVec(object):
         return returnCSVec
 
     def __iadd__(self, other):
-        if isinstance(other, CSVec):
+        if isinstance(other, SlowCSVec):
             self.accumulateCSVec(other)
         elif isinstance(other, np.ndarray):
             self.accumulateVec(other)
@@ -96,6 +98,7 @@ class SlowCSVec(object):
         return self
 
     def accumulateVec(self, vec):
+        #pdb.set_trace()
         # updating the sketch
         assert(len(vec.shape) == 1 and vec.size == self.d)
         for r in range(self.r):
@@ -130,10 +133,14 @@ class SlowCSVec(object):
         for r in range(self.r):
             est.append(self.table[r,self.buckets[r,HHs]]
                        * self.signs[r,HHs])
+
         return HHs, np.median(np.array(est), 0)
 
     def unSketch(self):
-        hhs = self.findHH(self.epsilon * self.l2estimate())
+        #pdb.set_trace()
+        hhs = list(self.findHH(thr=0.001))#self.epsilon * self.l2estimate())
+        hhs[0] = np.argsort(hhs[1]**2)[-self.k:]
+        hhs[1] = hhs[1][hhs[0]]
         unSketched = np.zeros(self.d)
         unSketched[hhs[0]] = hhs[1]
         return unSketched
@@ -143,6 +150,7 @@ class SlowCSVec(object):
         return np.sqrt(np.median(np.sum(self.table**2, 1)))
 
 
+"""
 if __name__ == "__main__": 
     np.random.seed(0)
     torch.random.manual_seed(0)
@@ -173,3 +181,4 @@ if __name__ == "__main__":
     print(list(trueTopkVec[trueHHs]))
     print(list(fastC.unSketch().cpu().numpy()[trueHHs]))
     print(np.abs(trueTopkVec - fastC.unSketch().cpu().numpy()).sum())
+"""
