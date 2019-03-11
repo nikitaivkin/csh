@@ -219,16 +219,13 @@ class CSVec(object):
                                      self.hashes[:,2:3], self.hashes[:,3:4],\
                                      self.hashes[:,4:5], self.hashes[:,5:6]
             for r in range(self.r):
-                buckets = (torch.arange(self.d, dtype=torch.int64, device=self.device)\
-                       .mul_(h1[r]).add_(h2[r]) % LARGEPRIME % self.c)
-                signs = ((torch.arange(self.d, dtype=torch.int64,device=self.device)\
-                      .mul_(h3[r]).add_(h4[r])\
-                      .mul_(torch.arange(self.d, dtype=torch.int64,device=self.device)).add_(h5[r])\
-                      .mul_(torch.arange(self.d, dtype=torch.int64,device=self.device)).add_(h6[r])\
+                buckets = (coords.clone().mul_(h1[r]).add_(h2[r]) % LARGEPRIME % self.c)
+                signs = ((coords.clone().mul_(h3[r]).add_(h4[r])\
+                      .mul_(coords).add_(h5[r]).mul_(coords).add_(h6[r])\
                      ) % LARGEPRIME % 2).float().mul_(2).add_(-1) 
                 
-                vals[r] = (self.table[r, buckets[coords]]
-                           * signs[coords])
+                vals[r] = (self.table[r, buckets]
+                           * signs)
         
         # take the median over rows in the sketch
         return vals.median(dim=0)[0]
