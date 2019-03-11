@@ -9,14 +9,11 @@ cache = {}
 
 class CSVec(object):
     """ Simple Count Sketched Vector """
-    def __init__(self, d, c, r, doInitialize=True, device=None):
+    def __init__(self, d, c, r, doInitialize=True, device=None, precomputeHashes=False):
         global cache
 
-        self.r = r # num of rows
-        self.c = c # num of columns
-        # need int() here b/c annoying np returning np.int64...
-        self.d = int(d) # vector dimensionality
-
+        self.r, self.c, self.d = r, c, int(d) 
+        self.precomputeHashes = precomputeHashes 
         if device is None:
             device = 'cuda' if torch.cuda.is_available() else 'cpu'
         else:
@@ -33,8 +30,9 @@ class CSVec(object):
         # again (wasting memory storing the same data several times)
         if (d, c, r) in cache:
             self.hashes = cache[(d, c, r)]["hashes"]
-            self.signs = cache[(d, c, r)]["signs"]
-            self.buckets = cache[(d, c, r)]["buckets"]
+            if precomputeHashes: 
+                self.signs = cache[(d, c, r)]["signs"]
+                self.buckets = cache[(d, c, r)]["buckets"]
             return
 
         # initialize hashing functions for each row:
@@ -48,28 +46,24 @@ class CSVec(object):
         self.hashes = torch.randint(0, LARGEPRIME, (r, 6),
                                     dtype=torch.int64, device=self.device)
         torch.random.set_rng_state(rand_state)
+        
+        if not precomputeHashes: 
+            cache[(d, c, r)] = {"hashes": self.hashes}
+        else: 
+            tokens = torch.arange(self.d, dtype=torch.int64, device=self.device).reshape((1, self.d))
 
-        tokens = torch.arange(self.d, dtype=torch.int64, device=self.device)
-        tokens = tokens.reshape((1, self.d))
+            h1, h2, h3, h4, h5, h6 = self.hashes[:,0:1], self.hashes[:,1:2],\
+                                     self.hashes[:,2:3], self.hashes[:,3:4],\
+                                     self.hashes[:,4:5], self.hashes[:,5:6] 
 
-        # computing sign hashes (4 wise independence)
-        h1 = self.hashes[:,2:3]
-        h2 = self.hashes[:,3:4]
-        h3 = self.hashes[:,4:5]
-        h4 = self.hashes[:,5:6]
-        self.signs = h1 * tokens
-        self.signs.add_(h2).mul_(tokens).add_(h3).mul_(tokens).add_(h4)
-        #self.signs = (((h1 * tokens + h2) * tokens + h3) * tokens + h4)
-        self.signs = (self.signs % LARGEPRIME % 2).float().mul_(2).add_(-1)
-
-        # computing bucket hashes  (2-wise independence)
-        h1 = self.hashes[:,0:1]
-        h2 = self.hashes[:,1:2]
-        self.buckets = (h1 * tokens + h2) % LARGEPRIME % self.c
-
-        cache[(d, c, r)] = {"hashes": self.hashes,
-                            "signs": self.signs,
-                            "buckets": self.buckets}
+            self.buckets = (h1 * tokens + h2) % LARGEPRIME % self.c
+            self.signs = h3 * tokens
+            self.signs.add_(h4).mul_(tokens).add_(h5).mul_(tokens).add_(h6)
+            self.signs = (self.signs % LARGEPRIME % 2).float().mul_(2).add_(-1)
+            
+            cache[(d, c, r)] = {"hashes": self.hashes,
+                                "signs": self.signs,
+                                "buckets": self.buckets}
 
     def zero(self):
         self.table.zero_()
@@ -80,11 +74,13 @@ class CSVec(object):
         # directly without recomputing it
         newCSVec = CSVec(d=self.d, c=self.c, r=self.r,
                          doInitialize=False, device=self.device)
-        newCSVec.table   = copy.deepcopy(self.table)
+        newCSVec.table = copy.deepcopy(self.table)
         global cache
         newCSVec.hashes = cache[(self.d, self.c, self.r)]["hashes"]
-        newCSVec.signs = cache[(self.d, self.c, self.r)]["signs"]
-        newCSVec.buckets = cache[(self.d, self.c, self.r)]["buckets"]
+        if self.precomputeHashes: 
+            newCSVec.signs = cache[(self.d, self.c, self.r)]["signs"]
+            newCSVec.buckets = cache[(self.d, self.c, self.r)]["buckets"]
+        
         #newCSVec.hashes  = copy.deepcopy(self.hashes)
         #newCSVec.signs   = copy.deepcopy(self.signs)
         #newCSVec.buckets = copy.deepcopy(self.buckets)
@@ -108,10 +104,27 @@ class CSVec(object):
     def accumulateVec(self, vec):
         # updating the sketch
         assert(len(vec.size()) == 1 and vec.size()[0] == self.d)
+        if self.precomputeHashes: 
+            for r in range(self.r):
+                self.table[r,:] += torch.bincount(input=self.buckets[r,:],
+                                                  weights=self.signs[r,:] * vec,
+                                                  minlength=self.c)
+            return 
+        # the rest for not precomputed hashes case 
+        h1, h2, h3, h4, h5, h6 = self.hashes[:,0:1], self.hashes[:,1:2],\
+                                 self.hashes[:,2:3], self.hashes[:,3:4],\
+                                 self.hashes[:,4:5], self.hashes[:,5:6]
         for r in range(self.r):
-            self.table[r,:] += torch.bincount(input=self.buckets[r,:],
-                                           weights=self.signs[r,:] * vec,
-                                           minlength=self.c)
+            buckets = (torch.arange(self.d, dtype=torch.int64, device=self.device)\
+                       .mul_(h1[r]).add_(h2[r]) % LARGEPRIME % self.c)
+            signs = ((torch.arange(self.d, dtype=torch.int64,device=self.device)\
+                      .mul_(h3[r]).add_(h4[r])\
+                      .mul_(torch.arange(self.d, dtype=torch.int64,device=self.device)).add_(h5[r])\
+                      .mul_(torch.arange(self.d, dtype=torch.int64,device=self.device)).add_(h6[r])\
+                     ) % LARGEPRIME % 2).float().mul_(2).add_(-1)
+            self.table[r,:] += torch.bincount(input=buckets,
+                                              weights=signs*vec,
+                                              minlength=self.c)    
 
     def accumulateCSVec(self, csVec):
         # merges csh sketch into self
@@ -126,39 +139,39 @@ class CSVec(object):
         HHs = torch.sort(vals**2)[1][-k:]
         return HHs, vals[HHs]
 
-        # below is a potentially faster (but broken ha) version
-        # of the code above. Leaving it here for now in case it
-        # makes any speed difference later, but I kinda doubt it...
-        # also it isn't even ported to pytorch
-
-        # set a conservative threshold to quickly rule out
-        # most possible heavy hitters
-        thr = 0.1 / np.sqrt(self.c)
-        mediumHitters = np.array([])
-        while True:
-            mediumHitters, mediumHittersVals = self._findHHThr(thr)
-            if mediumHitters.size >= k:
-                break
-
-            # if mediumHitters.size < k even with this threshold,
-            # use an even lower threshold next iteration
-            # and warn the user
-            print("THRESHOLD TOO HIGH!!")
-            thr *= 0.1
-
-        # get HHs from the medium hitters
-        percentile = 100 * (1 - k / mediumHitters.size)
-        cutoff = np.percentile(mediumHittersVals**2, percentile)
-        HHs = np.where(mediumHittersVals**2 >= cutoff)[0]
-
-        # in case there are multiple values of mediumHittersVals
-        # exactly equal to cutoff, now take the topk by sorting
-        if len(HHs) != k:
-            assert(len(HHs) > k)
-            HHs = np.argsort(mediumHittersVals[HHs]**2)[:k]
-        HHValues = mediumHittersVals[HHs]
-
-        return HHs, HHValues
+#        # below is a potentially faster (but broken ha) version
+#        # of the code above. Leaving it here for now in case it
+#        # makes any speed difference later, but I kinda doubt it...
+#        # also it isn't even ported to pytorch
+#
+#        # set a conservative threshold to quickly rule out
+#        # most possible heavy hitters
+#        thr = 0.1 / np.sqrt(self.c)
+#        mediumHitters = np.array([])
+#        while True:
+#            mediumHitters, mediumHittersVals = self._findHHThr(thr)
+#            if mediumHitters.size >= k:
+#                break
+#
+#            # if mediumHitters.size < k even with this threshold,
+#            # use an even lower threshold next iteration
+#            # and warn the user
+#            print("THRESHOLD TOO HIGH!!")
+#            thr *= 0.1
+#
+#        # get HHs from the medium hitters
+#        percentile = 100 * (1 - k / mediumHitters.size)
+#        cutoff = np.percentile(mediumHittersVals**2, percentile)
+#        HHs = np.where(mediumHittersVals**2 >= cutoff)[0]
+#
+#        # in case there are multiple values of mediumHittersVals
+#        # exactly equal to cutoff, now take the topk by sorting
+#        if len(HHs) != k:
+#            assert(len(HHs) > k)
+#            HHs = np.argsort(mediumHittersVals[HHs]**2)[:k]
+#        HHValues = mediumHittersVals[HHs]
+#
+#        return HHs, HHValues
 
     def _findHHThr(self, thr):
         assert(thr is not None)
@@ -170,8 +183,23 @@ class CSVec(object):
         tablefiltered = (  (self.table >  thr).float()
                          - (self.table < -thr).float())
         est = torch.zeros(self.d, device=self.device)
-        for r in range(self.r):
-            est += tablefiltered[r,self.buckets[r,:]] * self.signs[r,:]
+        if self.precomputeHashes: 
+            for r in range(self.r):
+                est += tablefiltered[r,self.buckets[r,:]] * self.signs[r,:]
+        else:
+            h1, h2, h3, h4, h5, h6 = self.hashes[:,0:1], self.hashes[:,1:2],\
+                                     self.hashes[:,2:3], self.hashes[:,3:4],\
+                                     self.hashes[:,4:5], self.hashes[:,5:6]
+            for r in range(self.r):
+                buckets = (torch.arange(self.d, dtype=torch.int64, device=self.device)\
+                       .mul_(h1[r]).add_(h2[r]) % LARGEPRIME % self.c)
+                signs = ((torch.arange(self.d, dtype=torch.int64,device=self.device)\
+                      .mul_(h3[r]).add_(h4[r])\
+                      .mul_(torch.arange(self.d, dtype=torch.int64,device=self.device)).add_(h5[r])\
+                      .mul_(torch.arange(self.d, dtype=torch.int64,device=self.device)).add_(h6[r])\
+                     ) % LARGEPRIME % 2).float().mul_(2).add_(-1) 
+                est += tablefiltered[r,buckets[r]] * signs[r]
+        
         est = (  (est >=  math.ceil(self.r/2.)).float()
                - (est <= -math.ceil(self.r/2.)).float())
 
@@ -182,10 +210,26 @@ class CSVec(object):
     def _findValues(self, coords):
         # estimating frequency of input coordinates
         vals = torch.zeros(self.r, coords.size()[0], device=self.device)
-        for r in range(self.r):
-            vals[r] = (self.table[r, self.buckets[r, coords]]
-                       * self.signs[r, coords])
-
+        if self.precomputeHashes: 
+            for r in range(self.r):
+                vals[r] = (self.table[r, self.buckets[r, coords]]
+                           * self.signs[r, coords])
+        else:
+            h1, h2, h3, h4, h5, h6 = self.hashes[:,0:1], self.hashes[:,1:2],\
+                                     self.hashes[:,2:3], self.hashes[:,3:4],\
+                                     self.hashes[:,4:5], self.hashes[:,5:6]
+            for r in range(self.r):
+                buckets = (torch.arange(self.d, dtype=torch.int64, device=self.device)\
+                       .mul_(h1[r]).add_(h2[r]) % LARGEPRIME % self.c)
+                signs = ((torch.arange(self.d, dtype=torch.int64,device=self.device)\
+                      .mul_(h3[r]).add_(h4[r])\
+                      .mul_(torch.arange(self.d, dtype=torch.int64,device=self.device)).add_(h5[r])\
+                      .mul_(torch.arange(self.d, dtype=torch.int64,device=self.device)).add_(h6[r])\
+                     ) % LARGEPRIME % 2).float().mul_(2).add_(-1) 
+                
+                vals[r] = (self.table[r, buckets[coords]]
+                           * signs[coords])
+        
         # take the median over rows in the sketch
         return vals.median(dim=0)[0]
 
@@ -220,4 +264,5 @@ class CSVec(object):
     def l2estimate(self):
         # l2 norm esimation from the sketch
         return np.sqrt(torch.median(torch.sum(self.table**2,1)).item())
+
 
