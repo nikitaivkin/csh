@@ -12,8 +12,8 @@ class CSVec(object):
     def __init__(self, d, c, r, doInitialize=True, device=None, precomputeHashes=False):
         global cache
 
-        self.r, self.c, self.d = r, c, int(d) 
-        self.precomputeHashes = precomputeHashes 
+        self.r, self.c, self.d = r, c, int(d)
+        self.precomputeHashes = precomputeHashes
         if device is None:
             device = 'cuda' if torch.cuda.is_available() else 'cpu'
         else:
@@ -30,7 +30,7 @@ class CSVec(object):
         # again (wasting memory storing the same data several times)
         if (d, c, r) in cache:
             self.hashes = cache[(d, c, r)]["hashes"]
-            if precomputeHashes: 
+            if precomputeHashes:
                 self.signs = cache[(d, c, r)]["signs"]
                 self.buckets = cache[(d, c, r)]["buckets"]
             return
@@ -46,21 +46,21 @@ class CSVec(object):
         self.hashes = torch.randint(0, LARGEPRIME, (r, 6),
                                     dtype=torch.int64, device=self.device)
         torch.random.set_rng_state(rand_state)
-        
-        if not precomputeHashes: 
+
+        if not precomputeHashes:
             cache[(d, c, r)] = {"hashes": self.hashes}
-        else: 
+        else:
             tokens = torch.arange(self.d, dtype=torch.int64, device=self.device).reshape((1, self.d))
 
             h1, h2, h3, h4, h5, h6 = self.hashes[:,0:1], self.hashes[:,1:2],\
                                      self.hashes[:,2:3], self.hashes[:,3:4],\
-                                     self.hashes[:,4:5], self.hashes[:,5:6] 
+                                     self.hashes[:,4:5], self.hashes[:,5:6]
 
             self.buckets = (h1 * tokens + h2) % LARGEPRIME % self.c
             self.signs = h3 * tokens
             self.signs.add_(h4).mul_(tokens).add_(h5).mul_(tokens).add_(h6)
             self.signs = (self.signs % LARGEPRIME % 2).float().mul_(2).add_(-1)
-            
+
             cache[(d, c, r)] = {"hashes": self.hashes,
                                 "signs": self.signs,
                                 "buckets": self.buckets}
@@ -77,10 +77,10 @@ class CSVec(object):
         newCSVec.table = copy.deepcopy(self.table)
         global cache
         newCSVec.hashes = cache[(self.d, self.c, self.r)]["hashes"]
-        if self.precomputeHashes: 
+        if self.precomputeHashes:
             newCSVec.signs = cache[(self.d, self.c, self.r)]["signs"]
             newCSVec.buckets = cache[(self.d, self.c, self.r)]["buckets"]
-        
+
         #newCSVec.hashes  = copy.deepcopy(self.hashes)
         #newCSVec.signs   = copy.deepcopy(self.signs)
         #newCSVec.buckets = copy.deepcopy(self.buckets)
@@ -104,13 +104,13 @@ class CSVec(object):
     def accumulateVec(self, vec):
         # updating the sketch
         assert(len(vec.size()) == 1 and vec.size()[0] == self.d)
-        if self.precomputeHashes: 
+        if self.precomputeHashes:
             for r in range(self.r):
                 self.table[r,:] += torch.bincount(input=self.buckets[r,:],
                                                   weights=self.signs[r,:] * vec,
                                                   minlength=self.c)
-            return 
-        # the rest for not precomputed hashes case 
+            return
+        # the rest for not precomputed hashes case
         h1, h2, h3, h4, h5, h6 = self.hashes[:,0:1], self.hashes[:,1:2],\
                                  self.hashes[:,2:3], self.hashes[:,3:4],\
                                  self.hashes[:,4:5], self.hashes[:,5:6]
@@ -124,7 +124,7 @@ class CSVec(object):
                      ) % LARGEPRIME % 2).float().mul_(2).add_(-1)
             self.table[r,:] += torch.bincount(input=buckets,
                                               weights=signs*vec,
-                                              minlength=self.c)    
+                                              minlength=self.c)
 
     def accumulateCSVec(self, csVec):
         # merges csh sketch into self
@@ -183,7 +183,7 @@ class CSVec(object):
         tablefiltered = (  (self.table >  thr).float()
                          - (self.table < -thr).float())
         est = torch.zeros(self.d, device=self.device)
-        if self.precomputeHashes: 
+        if self.precomputeHashes:
             for r in range(self.r):
                 est += tablefiltered[r,self.buckets[r,:]] * self.signs[r,:]
         else:
@@ -197,9 +197,9 @@ class CSVec(object):
                       .mul_(h3[r]).add_(h4[r])\
                       .mul_(torch.arange(self.d, dtype=torch.int64,device=self.device)).add_(h5[r])\
                       .mul_(torch.arange(self.d, dtype=torch.int64,device=self.device)).add_(h6[r])\
-                     ) % LARGEPRIME % 2).float().mul_(2).add_(-1) 
+                     ) % LARGEPRIME % 2).float().mul_(2).add_(-1)
                 est += tablefiltered[r,buckets[r]] * signs[r]
-        
+
         est = (  (est >=  math.ceil(self.r/2.)).float()
                - (est <= -math.ceil(self.r/2.)).float())
 
@@ -210,7 +210,7 @@ class CSVec(object):
     def _findValues(self, coords):
         # estimating frequency of input coordinates
         vals = torch.zeros(self.r, coords.size()[0], device=self.device)
-        if self.precomputeHashes: 
+        if self.precomputeHashes:
             for r in range(self.r):
                 vals[r] = (self.table[r, self.buckets[r, coords]]
                            * self.signs[r, coords])
@@ -222,11 +222,11 @@ class CSVec(object):
                 buckets = (coords.clone().mul_(h1[r]).add_(h2[r]) % LARGEPRIME % self.c)
                 signs = ((coords.clone().mul_(h3[r]).add_(h4[r])\
                       .mul_(coords).add_(h5[r]).mul_(coords).add_(h6[r])\
-                     ) % LARGEPRIME % 2).float().mul_(2).add_(-1) 
-                
+                     ) % LARGEPRIME % 2).float().mul_(2).add_(-1)
+
                 vals[r] = (self.table[r, buckets]
                            * signs)
-        
+
         # take the median over rows in the sketch
         return vals.median(dim=0)[0]
 
