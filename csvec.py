@@ -50,11 +50,11 @@ class CSVec(object):
         if not precomputeHashes:
             cache[(d, c, r)] = {"hashes": self.hashes}
         else:
-            tokens = torch.arange(self.d, dtype=torch.int64, device=self.device).reshape((1, self.d))
+            tokens = torch.arange(self.d, dtype=torch.int64, device='cpu').reshape((1, self.d))
 
-            h1, h2, h3, h4, h5, h6 = self.hashes[:,0:1], self.hashes[:,1:2],\
-                                     self.hashes[:,2:3], self.hashes[:,3:4],\
-                                     self.hashes[:,4:5], self.hashes[:,5:6]
+            h1, h2, h3, h4, h5, h6 = self.hashes[:,0:1].cpu(), self.hashes[:,1:2].cpu(),\
+                                     self.hashes[:,2:3].cpu(), self.hashes[:,3:4].cpu(),\
+                                     self.hashes[:,4:5].cpu(), self.hashes[:,5:6].cpu()
 
             self.buckets = (h1 * tokens + h2) % LARGEPRIME % self.c
             self.signs = h3 * tokens
@@ -117,8 +117,8 @@ class CSVec(object):
         assert(len(vec.size()) == 1 and vec.size()[0] == self.d)
         if self.precomputeHashes:
             for r in range(self.r):
-                self.table[r,:] += torch.bincount(input=self.buckets[r,:],
-                                                  weights=self.signs[r,:] * vec,
+                self.table[r,:] += torch.bincount(input=(self.buckets[r,:]).cuda(),
+                                                  weights=(self.signs[r,:]).cuda() * vec,
                                                   minlength=self.c)
             return
         # the rest for not precomputed hashes case
@@ -187,7 +187,7 @@ class CSVec(object):
         est = torch.zeros(self.d, device=self.device)
         if self.precomputeHashes:
             for r in range(self.r):
-                est += tablefiltered[r,self.buckets[r,:]] * self.signs[r,:]
+                est += tablefiltered[r,(self.buckets[r,:]).cuda()] * (self.signs[r,:]).cuda()
         else:
             for r in range(self.r):
                 [buckets, signs] = self.computeHashes(r)
@@ -205,8 +205,8 @@ class CSVec(object):
         vals = torch.zeros(self.r, coords.size()[0], device=self.device)
         if self.precomputeHashes:
             for r in range(self.r):
-                vals[r] = (self.table[r, self.buckets[r, coords]]
-                           * self.signs[r, coords])
+                vals[r] = (self.table[r, (self.buckets[r, coords]).cuda()]
+                           * (self.signs[r, coords]).cuda())
         else:
             for r in range(self.r):
                 [buckets, signs] = self.computeHashes(r)
