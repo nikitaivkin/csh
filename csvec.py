@@ -101,6 +101,17 @@ class CSVec(object):
             raise ValueError("Can't add this to a CSVec: {}".format(other))
         return self
 
+    
+    def computeHashes(self, r): 
+        buckets = (torch.arange(self.d, dtype=torch.int64, device=self.device)\
+                   .mul_(self.hashes[r, 0]).add_(self.hashes[r, 1]) % LARGEPRIME % self.c)
+        signs = ((torch.arange(self.d, dtype=torch.int64,device=self.device)\
+                  .mul_(self.hashes[r, 2]).add_(self.hashes[r, 3])\
+                  .mul_(torch.arange(self.d, dtype=torch.int64,device=self.device)).add_(self.hashes[r, 4])\
+                  .mul_(torch.arange(self.d, dtype=torch.int64,device=self.device)).add_(self.hashes[r, 5])\
+                     ) % LARGEPRIME % 2).float().mul_(2).add_(-1)
+        return [buckets, signs]
+    
     def accumulateVec(self, vec):
         # updating the sketch
         assert(len(vec.size()) == 1 and vec.size()[0] == self.d)
@@ -111,17 +122,8 @@ class CSVec(object):
                                                   minlength=self.c)
             return
         # the rest for not precomputed hashes case
-        h1, h2, h3, h4, h5, h6 = self.hashes[:,0:1], self.hashes[:,1:2],\
-                                 self.hashes[:,2:3], self.hashes[:,3:4],\
-                                 self.hashes[:,4:5], self.hashes[:,5:6]
         for r in range(self.r):
-            buckets = (torch.arange(self.d, dtype=torch.int64, device=self.device)\
-                       .mul_(h1[r]).add_(h2[r]) % LARGEPRIME % self.c)
-            signs = ((torch.arange(self.d, dtype=torch.int64,device=self.device)\
-                      .mul_(h3[r]).add_(h4[r])\
-                      .mul_(torch.arange(self.d, dtype=torch.int64,device=self.device)).add_(h5[r])\
-                      .mul_(torch.arange(self.d, dtype=torch.int64,device=self.device)).add_(h6[r])\
-                     ) % LARGEPRIME % 2).float().mul_(2).add_(-1)
+            [buckets, signs] = self.computeHashes(r)
             self.table[r,:] += torch.bincount(input=buckets,
                                               weights=signs*vec,
                                               minlength=self.c)
@@ -187,17 +189,8 @@ class CSVec(object):
             for r in range(self.r):
                 est += tablefiltered[r,self.buckets[r,:]] * self.signs[r,:]
         else:
-            h1, h2, h3, h4, h5, h6 = self.hashes[:,0:1], self.hashes[:,1:2],\
-                                     self.hashes[:,2:3], self.hashes[:,3:4],\
-                                     self.hashes[:,4:5], self.hashes[:,5:6]
             for r in range(self.r):
-                buckets = (torch.arange(self.d, dtype=torch.int64, device=self.device)\
-                       .mul_(h1[r]).add_(h2[r]) % LARGEPRIME % self.c)
-                signs = ((torch.arange(self.d, dtype=torch.int64,device=self.device)\
-                      .mul_(h3[r]).add_(h4[r])\
-                      .mul_(torch.arange(self.d, dtype=torch.int64,device=self.device)).add_(h5[r])\
-                      .mul_(torch.arange(self.d, dtype=torch.int64,device=self.device)).add_(h6[r])\
-                     ) % LARGEPRIME % 2).float().mul_(2).add_(-1)
+                [buckets, signs] = self.computeHashes(r)
                 est += tablefiltered[r,buckets[r]] * signs[r]
 
         est = (  (est >=  math.ceil(self.r/2.)).float()
@@ -215,17 +208,9 @@ class CSVec(object):
                 vals[r] = (self.table[r, self.buckets[r, coords]]
                            * self.signs[r, coords])
         else:
-            h1, h2, h3, h4, h5, h6 = self.hashes[:,0:1], self.hashes[:,1:2],\
-                                     self.hashes[:,2:3], self.hashes[:,3:4],\
-                                     self.hashes[:,4:5], self.hashes[:,5:6]
             for r in range(self.r):
-                buckets = (coords.clone().mul_(h1[r]).add_(h2[r]) % LARGEPRIME % self.c)
-                signs = ((coords.clone().mul_(h3[r]).add_(h4[r])\
-                      .mul_(coords).add_(h5[r]).mul_(coords).add_(h6[r])\
-                     ) % LARGEPRIME % 2).float().mul_(2).add_(-1)
-
-                vals[r] = (self.table[r, buckets]
-                           * signs)
+                [buckets, signs] = self.computeHashes(r)
+                vals[r] = self.table[r, buckets[coords]] * signs [coords]
 
         # take the median over rows in the sketch
         return vals.median(dim=0)[0]
