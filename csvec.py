@@ -7,15 +7,26 @@ LARGEPRIME = 2**61-1
 
 cache = {}
 
+#import line_profiler
+#import atexit
+#profile = line_profiler.LineProfiler()
+#atexit.register(profile.print_stats)
+
 class CSVec(object):
     """ Simple Count Sketched Vector """
-    def __init__(self, d, c, r, doInitialize=True, device=None):
+    def __init__(self, d, c, r,
+                 doInitialize=True, device=None, nChunks=1):
         global cache
 
         self.r = r # num of rows
         self.c = c # num of columns
         # need int() here b/c annoying np returning np.int64...
         self.d = int(d) # vector dimensionality
+        # how much to chunk up (on the GPU) any computation
+        # that requires computing something along all tokens. Doing
+        # so saves GPU RAM at the cost of having to transfer the chunks
+        # of self.buckets and self.signs between host & device
+        self.nChunks = nChunks
 
         if device is None:
             device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -32,7 +43,7 @@ class CSVec(object):
         # if we already have these, don't do the same computation
         # again (wasting memory storing the same data several times)
         if (d, c, r) in cache:
-            self.hashes = cache[(d, c, r)]["hashes"]
+            hashes = cache[(d, c, r)]["hashes"]
             self.signs = cache[(d, c, r)]["signs"]
             self.buckets = cache[(d, c, r)]["buckets"]
             return
@@ -43,31 +54,45 @@ class CSVec(object):
         # maintain existing random state so we don't mess with
         # the main module trying to set the random seed but still
         # get reproducible hashes for the same value of r
+
+        # do all these computations on the CPU, since pytorch
+        # is incapable of in-place mod, and without that, this
+        # computation uses up too much GPU RAM
         rand_state = torch.random.get_rng_state()
         torch.random.manual_seed(42)
-        self.hashes = torch.randint(0, LARGEPRIME, (r, 6),
-                                    dtype=torch.int64, device=self.device)
+        hashes = torch.randint(0, LARGEPRIME, (r, 6),
+                                    dtype=torch.int64, device="cpu")
         torch.random.set_rng_state(rand_state)
 
-        tokens = torch.arange(self.d, dtype=torch.int64, device=self.device)
+        tokens = torch.arange(self.d, dtype=torch.int64, device="cpu")
         tokens = tokens.reshape((1, self.d))
 
         # computing sign hashes (4 wise independence)
-        h1 = self.hashes[:,2:3]
-        h2 = self.hashes[:,3:4]
-        h3 = self.hashes[:,4:5]
-        h4 = self.hashes[:,5:6]
-        self.signs = h1 * tokens
-        self.signs.add_(h2).mul_(tokens).add_(h3).mul_(tokens).add_(h4)
-        #self.signs = (((h1 * tokens + h2) * tokens + h3) * tokens + h4)
-        self.signs = (self.signs % LARGEPRIME % 2).float().mul_(2).add_(-1)
+        h1 = hashes[:,2:3]
+        h2 = hashes[:,3:4]
+        h3 = hashes[:,4:5]
+        h4 = hashes[:,5:6]
+        self.signs = (((h1 * tokens + h2) * tokens + h3) * tokens + h4)
+        self.signs = ((self.signs % LARGEPRIME % 2) * 2 - 1).float()
+        if self.nChunks == 1:
+            # only move to device now, since this computation takes too
+            # much memory if done on the GPU, and it can't be done
+            # in-place because pytorch (1.0.1) has no in-place modulo
+            # function that works on large numbers
+            self.signs = self.signs.to(self.device)
 
         # computing bucket hashes  (2-wise independence)
-        h1 = self.hashes[:,0:1]
-        h2 = self.hashes[:,1:2]
-        self.buckets = (h1 * tokens + h2) % LARGEPRIME % self.c
+        h1 = hashes[:,0:1]
+        h2 = hashes[:,1:2]
+        self.buckets = ((h1 * tokens) + h2) % LARGEPRIME % self.c
+        if self.nChunks == 1:
+            # only move to device now. See comment above.
+            # can't cast this to int, unfortunately, since we index with
+            # this below, and pytorch only lets us index with long
+            # tensors
+            self.buckets = self.buckets.to(self.device)
 
-        cache[(d, c, r)] = {"hashes": self.hashes,
+        cache[(d, c, r)] = {"hashes": hashes,
                             "signs": self.signs,
                             "buckets": self.buckets}
 
@@ -79,15 +104,13 @@ class CSVec(object):
         # which is slow, even though we can just copy it over
         # directly without recomputing it
         newCSVec = CSVec(d=self.d, c=self.c, r=self.r,
-                         doInitialize=False, device=self.device)
+                         doInitialize=False, device=self.device,
+                         nChunks=self.nChunks)
         newCSVec.table   = copy.deepcopy(self.table)
         global cache
         newCSVec.hashes = cache[(self.d, self.c, self.r)]["hashes"]
         newCSVec.signs = cache[(self.d, self.c, self.r)]["signs"]
         newCSVec.buckets = cache[(self.d, self.c, self.r)]["buckets"]
-        #newCSVec.hashes  = copy.deepcopy(self.hashes)
-        #newCSVec.signs   = copy.deepcopy(self.signs)
-        #newCSVec.buckets = copy.deepcopy(self.buckets)
         return newCSVec
 
     def __add__(self, other):
@@ -109,9 +132,31 @@ class CSVec(object):
         # updating the sketch
         assert(len(vec.size()) == 1 and vec.size()[0] == self.d)
         for r in range(self.r):
-            self.table[r,:] += torch.bincount(input=self.buckets[r,:],
-                                           weights=self.signs[r,:] * vec,
-                                           minlength=self.c)
+            buckets = self.buckets[r,:].to(self.device)
+            signs = self.signs[r,:].to(self.device)
+            self.table[r,:] += torch.bincount(
+                                input=buckets,
+                                weights=signs * vec,
+                                minlength=self.c
+                               )
+            #self.table[r,:] += torch.ones(self.c).to(self.device)
+
+        """
+        for i in range(self.nChunks):
+            start = int(i / self.nChunks * self.d)
+            end = int((i + 1) / self.nChunks * self.d)
+            # this will be idempotent if nChunks == 1
+            buckets = self.buckets[:,start:end].to(self.device)
+            signs = self.signs[:,start:end].to(self.device)
+            for r in range(self.r):
+                self.table[r,:] += torch.bincount(
+                                    input=buckets[r,:],
+                                    weights=signs[r,:] * vec[start:end],
+                                    minlength=self.c
+                                   )
+                #self.table[r,:] += torch.ones(self.c)
+                #pass
+        """
 
     def accumulateCSVec(self, csVec):
         # merges csh sketch into self
@@ -120,45 +165,18 @@ class CSVec(object):
         assert(self.r == csVec.r)
         self.table += csVec.table
 
+    #@profile
     def _findHHK(self, k):
+        #return torch.arange(k).to(self.device), torch.arange(k).to(self.device).float()
         assert(k is not None)
-        vals = self._findValues(torch.arange(self.d, device=self.device))
+        tokens = torch.arange(self.d, device=self.device)
+        vals = self._findValues(tokens)
+        #vals = self._findAllValues()
+        #vals = torch.arange(self.d).to(self.device).float()
+        # sort is faster than torch.topk...
         HHs = torch.sort(vals**2)[1][-k:]
+        #HHs = torch.topk(vals**2, k, sorted=False)[1]
         return HHs, vals[HHs]
-
-        # below is a potentially faster (but broken ha) version
-        # of the code above. Leaving it here for now in case it
-        # makes any speed difference later, but I kinda doubt it...
-        # also it isn't even ported to pytorch
-
-        # set a conservative threshold to quickly rule out
-        # most possible heavy hitters
-        thr = 0.1 / np.sqrt(self.c)
-        mediumHitters = np.array([])
-        while True:
-            mediumHitters, mediumHittersVals = self._findHHThr(thr)
-            if mediumHitters.size >= k:
-                break
-
-            # if mediumHitters.size < k even with this threshold,
-            # use an even lower threshold next iteration
-            # and warn the user
-            print("THRESHOLD TOO HIGH!!")
-            thr *= 0.1
-
-        # get HHs from the medium hitters
-        percentile = 100 * (1 - k / mediumHitters.size)
-        cutoff = np.percentile(mediumHittersVals**2, percentile)
-        HHs = np.where(mediumHittersVals**2 >= cutoff)[0]
-
-        # in case there are multiple values of mediumHittersVals
-        # exactly equal to cutoff, now take the topk by sorting
-        if len(HHs) != k:
-            assert(len(HHs) > k)
-            HHs = np.argsort(mediumHittersVals[HHs]**2)[:k]
-        HHValues = mediumHittersVals[HHs]
-
-        return HHs, HHValues
 
     def _findHHThr(self, thr):
         assert(thr is not None)
@@ -181,13 +199,38 @@ class CSVec(object):
 
     def _findValues(self, coords):
         # estimating frequency of input coordinates
-        vals = torch.zeros(self.r, coords.size()[0], device=self.device)
-        for r in range(self.r):
-            vals[r] = (self.table[r, self.buckets[r, coords]]
-                       * self.signs[r, coords])
+        chunks = []
+        d = coords.size()[0]
+        if self.nChunks == 1:
+            vals = torch.zeros(self.r, d, device=self.device)
+            for r in range(self.r):
+                vals[r] = (self.table[r, self.buckets[r, coords]]
+                           * self.signs[r, coords])
+            return vals.median(dim=0)[0]
 
-        # take the median over rows in the sketch
-        return vals.median(dim=0)[0]
+        # if we get here, nChunks > 1
+        for i in range(self.nChunks):
+            vals = torch.zeros(self.r, d // self.nChunks,
+                               device=self.device)
+            start = int(i / self.nChunks * d)
+            end = int((i + 1) / self.nChunks * d)
+            buckets = self.buckets[:,coords[start:end]].to(self.device)
+            signs = self.signs[:,coords[start:end]].to(self.device)
+            for r in range(self.r):
+                vals[r] = self.table[r, buckets[r, :]] * signs[r, :]
+            # take the median over rows in the sketch
+            chunks.append(vals.median(dim=0)[0])
+
+        vals = torch.cat(chunks, dim=0)
+        return vals
+
+    def _findAllValues(self):
+        if self.nChunks == 1:
+            vals = torch.zeros(self.r, self.d, device=self.device)
+            for r in range(self.r):
+                vals[r] = (self.table[r, self.buckets[r, :]]
+                           * self.signs[r, :])
+            return vals.median(dim=0)[0]
 
     def findHHs(self, k=None, thr=None):
         assert((k is None) != (thr is None))
