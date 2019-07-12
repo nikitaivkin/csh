@@ -13,9 +13,46 @@ cache = {}
 #atexit.register(profile.print_stats)
 
 class CSVec(object):
-    """ Simple Count Sketched Vector """
+    """ Count Sketch of a vector
+
+    Treating a vector as a stream of tokens with associated weights,
+    this class computes the count sketch of an input vector, and
+    supports operations on the resulting sketch.
+
+    public methods: zero, unSketch, l2estimate, __add__, __iadd__
+    """
+
     def __init__(self, d, c, r, doInitialize=True, device=None,
                  numBlocks=1):
+        """ Constductor for CSVec
+
+        Args:
+            d: the cardinality of the skteched vector
+            c: the number of columns (buckets) in the sketch
+            r: the number of rows in the sketch
+            doInitialize: if False, you are responsible for setting
+                self.table, self.signs, self.buckets, self.blockSigns,
+                and self.blockOffsets
+            device: which device to use (cuda or cpu). If None, chooses
+                cuda if available, else cpu
+            numBlocks: mechanism to reduce memory consumption. A value
+                of 1 leads to a normal sketch. Higher values reduce
+                peak memory consumption proportionally but decrease
+                randomness of the hashes
+        Note:
+            Since sketching a vector always requires the hash functions
+            to be evaluated for all of 0..d-1, we precompute the
+            hash values in the constructor. However, this takes d*r
+            memory, which is sometimes too big. We therefore only
+            compute hashes of 0..(d/numBlocks - 1), and we let the
+            hash of all other tokens be the hash of that token modulo
+            d/numBlocks. In order to recover some of the lost randomness,
+            we add a random number to each "block" (self.blockOffsets)
+            and multiply each block by a random sign (self.blockSigns)
+        """
+
+        # save random quantities in a module-level variable so we can
+        # reuse them if someone else makes a sketch with the same d, c, r
         global cache
 
         self.r = r # num of rows
@@ -27,22 +64,25 @@ class CSVec(object):
         # them to be repetitions of a single block
         self.numBlocks = numBlocks
 
+        # choose the device automatically if none was given
         if device is None:
             device = 'cuda' if torch.cuda.is_available() else 'cpu'
         else:
             assert(device == "cuda" or device == "cpu")
         self.device = device
 
+        # this flag indicates that the caller plans to set up
+        # self.signs, self.buckets, self.blockSigns, and self.blockOffsets
+        # itself (e.g. self.deepcopy does this)
         if not doInitialize:
             return
 
-        # initialize the sketch
+        # initialize the sketch to all zeros
         self.table = torch.zeros((r, c), device=self.device)
 
         # if we already have these, don't do the same computation
         # again (wasting memory storing the same data several times)
         if (d, c, r) in cache:
-            hashes = cache[(d, c, r)]["hashes"]
             self.signs = cache[(d, c, r)]["signs"]
             self.buckets = cache[(d, c, r)]["buckets"]
             if self.numBlocks > 1:
@@ -63,8 +103,9 @@ class CSVec(object):
         rand_state = torch.random.get_rng_state()
         torch.random.manual_seed(42)
         hashes = torch.randint(0, LARGEPRIME, (r, 6),
-                                    dtype=torch.int64, device="cpu")
+                               dtype=torch.int64, device="cpu")
 
+        # compute random blockOffsets and blockSigns
         if self.numBlocks > 1:
             nTokens = self.d // numBlocks
             if self.d % numBlocks != 0:
@@ -81,6 +122,7 @@ class CSVec(object):
 
         torch.random.set_rng_state(rand_state)
 
+        # tokens are the indices of the vector entries
         tokens = torch.arange(nTokens, dtype=torch.int64, device="cpu")
         tokens = tokens.reshape((1, nTokens))
 
@@ -98,7 +140,7 @@ class CSVec(object):
         # function that works on large numbers
         self.signs = self.signs.to(self.device)
 
-        # computing bucket hashes  (2-wise independence)
+        # computing bucket hashes (2-wise independence)
         h1 = hashes[:,0:1]
         h2 = hashes[:,1:2]
         self.buckets = ((h1 * tokens) + h2) % LARGEPRIME % self.c
@@ -109,14 +151,14 @@ class CSVec(object):
         # tensors
         self.buckets = self.buckets.to(self.device)
 
-        cache[(d, c, r)] = {"hashes": hashes,
-                            "signs": self.signs,
+        cache[(d, c, r)] = {"signs": self.signs,
                             "buckets": self.buckets}
         if numBlocks > 1:
             cache[(d, c, r)].update({"blockSigns": self.blockSigns,
                                      "blockOffsets": self.blockOffsets})
 
     def zero(self):
+        """ Set all the entries of the sketch to zero """
         self.table.zero_()
 
     def __deepcopy__(self, memodict={}):
@@ -129,7 +171,6 @@ class CSVec(object):
         newCSVec.table = copy.deepcopy(self.table)
         global cache
         cachedVals = cache[(self.d, self.c, self.r)]
-        newCSVec.hashes = cachedVals["hashes"]
         newCSVec.signs = cachedVals["signs"]
         newCSVec.buckets = cachedVals["buckets"]
         if self.numBlocks > 1:
@@ -138,26 +179,47 @@ class CSVec(object):
         return newCSVec
 
     def __add__(self, other):
+        """ Returns the sum of self with other
+
+        Args:
+            other: either a 1D torch.tensor of size d, or a CSVec with
+                identical values of d, c, and r
+        """
         # a bit roundabout in order to avoid initializing a new CSVec
         returnCSVec = copy.deepcopy(self)
         returnCSVec += other
         return returnCSVec
 
     def __iadd__(self, other):
+        """ Accumulates either another sketch, or an unsketched vector
+
+        Args:
+            other: either a 1D torch.tensor of size d, or a CSVec with
+                identical values of d, c, and r
+        """
         if isinstance(other, CSVec):
-            self.accumulateCSVec(other)
+            self._accumulateCSVec(other)
         elif isinstance(other, torch.Tensor):
-            self.accumulateVec(other)
+            self._accumulateVec(other)
         else:
             raise ValueError("Can't add this to a CSVec: {}".format(other))
         return self
 
-    def accumulateVec(self, vec):
-        # updating the sketch
+    def _accumulateVec(self, vec):
+        """ Sketches a vector and adds the result to self
+
+        Args:
+            vec: the vector to be sketched
+        """
         assert(len(vec.size()) == 1 and vec.size()[0] == self.d)
+
+        # the vector is sketched to each row independently
         for r in range(self.r):
             buckets = self.buckets[r,:].to(self.device)
             signs = self.signs[r,:].to(self.device)
+            # the main computation here is the bincount below, but
+            # there's lots of index accounitng leading up to it due
+            # to numBlocks being potentially > 1
             for blockId in range(self.numBlocks):
                 start = blockId * buckets.size()[0]
                 end = (blockId + 1) * buckets.size()[0]
@@ -168,6 +230,8 @@ class CSVec(object):
                     offsetBuckets += self.blockOffsets[blockId]
                     offsetBuckets %= self.c
                     offsetSigns *= self.blockSigns[blockId]
+                # bincount computes the sum of all values in the vector
+                # that correspond to each bucket
                 self.table[r,:] += torch.bincount(
                                     input=offsetBuckets,
                                     weights=offsetSigns * vec[start:end],
@@ -175,7 +239,7 @@ class CSVec(object):
                                    )
 
 
-    def accumulateCSVec(self, csVec):
+    def _accumulateCSVec(self, csVec):
         # merges csh sketch into self
         assert(self.d == csVec.d)
         assert(self.c == csVec.c)
@@ -256,7 +320,7 @@ class CSVec(object):
                 medians[start:end] = vals.median(dim=0)[0]
             return medians
 
-    def findHHs(self, k=None, thr=None):
+    def _findHHs(self, k=None, thr=None):
         assert((k is None) != (thr is None))
         if k is not None:
             return self._findHHK(k)
@@ -264,6 +328,22 @@ class CSVec(object):
             return self._findHHThr(thr)
 
     def unSketch(self, k=None, epsilon=None):
+        """ Performs heavy-hitter recovery on the sketch
+
+        Args:
+            k: if not None, the number of heavy hitters to recover
+            epsilon: if not None, the approximation error in the recovery.
+                The returned heavy hitters are estimated to be greater
+                than epsilon * self.l2estimate()
+
+        Returns:
+            A vector containing the heavy hitters, with zero everywhere
+            else
+
+        Note:
+            exactly one of k and epsilon must be non-None
+        """
+
         # either epsilon or k might be specified
         # (but not both). Act accordingly
         if epsilon is None:
@@ -271,7 +351,7 @@ class CSVec(object):
         else:
             thr = epsilon * self.l2estimate()
 
-        hhs = self.findHHs(k=k, thr=thr)
+        hhs = self._findHHs(k=k, thr=thr)
 
         if k is not None:
             assert(len(hhs[1]) == k)
@@ -285,6 +365,7 @@ class CSVec(object):
         return unSketched
 
     def l2estimate(self):
+        """ Return an estimate of the L2 norm of the sketch """
         # l2 norm esimation from the sketch
         return np.sqrt(torch.median(torch.sum(self.table**2,1)).item())
 
