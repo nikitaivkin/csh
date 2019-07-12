@@ -15,18 +15,13 @@ cache = {}
 class CSVec(object):
     """ Simple Count Sketched Vector """
     def __init__(self, d, c, r, doInitialize=True, device=None,
-                 nChunks=1, numBlocks=1):
+                 numBlocks=1):
         global cache
 
         self.r = r # num of rows
         self.c = c # num of columns
         # need int() here b/c annoying np returning np.int64...
         self.d = int(d) # vector dimensionality
-        # how much to chunk up (on the GPU) any computation
-        # that requires computing something along all tokens. Doing
-        # so saves GPU RAM at the cost of having to transfer the chunks
-        # of self.buckets and self.signs between host & device
-        self.nChunks = nChunks
 
         # reduce memory consumption of signs & buckets by constraining
         # them to be repetitions of a single block
@@ -96,23 +91,23 @@ class CSVec(object):
         h4 = hashes[:,5:6]
         self.signs = (((h1 * tokens + h2) * tokens + h3) * tokens + h4)
         self.signs = ((self.signs % LARGEPRIME % 2) * 2 - 1).float()
-        if self.nChunks == 1:
-            # only move to device now, since this computation takes too
-            # much memory if done on the GPU, and it can't be done
-            # in-place because pytorch (1.0.1) has no in-place modulo
-            # function that works on large numbers
-            self.signs = self.signs.to(self.device)
+
+        # only move to device now, since this computation takes too
+        # much memory if done on the GPU, and it can't be done
+        # in-place because pytorch (1.0.1) has no in-place modulo
+        # function that works on large numbers
+        self.signs = self.signs.to(self.device)
 
         # computing bucket hashes  (2-wise independence)
         h1 = hashes[:,0:1]
         h2 = hashes[:,1:2]
         self.buckets = ((h1 * tokens) + h2) % LARGEPRIME % self.c
-        if self.nChunks == 1:
-            # only move to device now. See comment above.
-            # can't cast this to int, unfortunately, since we index with
-            # this below, and pytorch only lets us index with long
-            # tensors
-            self.buckets = self.buckets.to(self.device)
+
+        # only move to device now. See comment above.
+        # can't cast this to int, unfortunately, since we index with
+        # this below, and pytorch only lets us index with long
+        # tensors
+        self.buckets = self.buckets.to(self.device)
 
         cache[(d, c, r)] = {"hashes": hashes,
                             "signs": self.signs,
@@ -130,7 +125,7 @@ class CSVec(object):
         # directly without recomputing it
         newCSVec = CSVec(d=self.d, c=self.c, r=self.r,
                          doInitialize=False, device=self.device,
-                         nChunks=self.nChunks, numBlocks=self.numBlocks)
+                         numBlocks=self.numBlocks)
         newCSVec.table = copy.deepcopy(self.table)
         global cache
         cachedVals = cache[(self.d, self.c, self.r)]
@@ -178,24 +173,7 @@ class CSVec(object):
                                     weights=offsetSigns * vec[start:end],
                                     minlength=self.c
                                    )
-                #self.table[r,:] += torch.ones(self.c).to(self.device)
 
-        """
-        for i in range(self.nChunks):
-            start = int(i / self.nChunks * self.d)
-            end = int((i + 1) / self.nChunks * self.d)
-            # this will be idempotent if nChunks == 1
-            buckets = self.buckets[:,start:end].to(self.device)
-            signs = self.signs[:,start:end].to(self.device)
-            for r in range(self.r):
-                self.table[r,:] += torch.bincount(
-                                    input=buckets[r,:],
-                                    weights=signs[r,:] * vec[start:end],
-                                    minlength=self.c
-                                   )
-                #self.table[r,:] += torch.ones(self.c)
-                #pass
-        """
 
     def accumulateCSVec(self, csVec):
         # merges csh sketch into self
@@ -204,14 +182,12 @@ class CSVec(object):
         assert(self.r == csVec.r)
         self.table += csVec.table
 
-    #@profile
     def _findHHK(self, k):
-        #return torch.arange(k).to(self.device), torch.arange(k).to(self.device).float()
         assert(k is not None)
         #tokens = torch.arange(self.d, device=self.device)
         #vals = self._findValues(tokens)
         vals = self._findAllValues()
-        #vals = torch.arange(self.d).to(self.device).float()
+
         # sort is faster than torch.topk...
         HHs = torch.sort(vals**2)[1][-k:]
         #HHs = torch.topk(vals**2, k, sorted=False)[1]
@@ -239,57 +215,37 @@ class CSVec(object):
     def _findValues(self, coords):
         # estimating frequency of input coordinates
         assert(self.numBlocks == 1)
-        chunks = []
         d = coords.size()[0]
-        if self.nChunks == 1:
-            vals = torch.zeros(self.r, self.d, device=self.device)
-            for r in range(self.r):
-                vals[r] = (self.table[r, self.buckets[r, coords]]
-                           * self.signs[r, coords])
-            return vals.median(dim=0)[0]
-
-        # if we get here, nChunks > 1
-        for i in range(self.nChunks):
-            vals = torch.zeros(self.r, d // self.nChunks,
-                               device=self.device)
-            start = int(i / self.nChunks * d)
-            end = int((i + 1) / self.nChunks * d)
-            buckets = self.buckets[:,coords[start:end]].to(self.device)
-            signs = self.signs[:,coords[start:end]].to(self.device)
-            for r in range(self.r):
-                vals[r] = self.table[r, buckets[r, :]] * signs[r, :]
-            # take the median over rows in the sketch
-            chunks.append(vals.median(dim=0)[0])
-
-        vals = torch.cat(chunks, dim=0)
-        return vals
+        vals = torch.zeros(self.r, self.d, device=self.device)
+        for r in range(self.r):
+            vals[r] = (self.table[r, self.buckets[r, coords]]
+                       * self.signs[r, coords])
+        return vals.median(dim=0)[0]
 
     def _findAllValues(self):
-        if self.nChunks == 1:
-            if self.numBlocks == 1:
-                vals = torch.zeros(self.r, self.d, device=self.device)
+        if self.numBlocks == 1:
+            vals = torch.zeros(self.r, self.d, device=self.device)
+            for r in range(self.r):
+                vals[r] = (self.table[r, self.buckets[r,:]]
+                           * self.signs[r,:])
+            return vals.median(dim=0)[0]
+        else:
+            medians = torch.zeros(self.d, device=self.device)
+            for blockId in range(self.numBlocks):
+                start = blockId * self.buckets.size()[1]
+                end = (blockId + 1) * self.buckets.size()[1]
+                end = min(end, self.d)
+                vals = torch.zeros(self.r, end-start, device=self.device)
                 for r in range(self.r):
-                    vals[r] = (self.table[r, self.buckets[r,:]]
-                               * self.signs[r,:])
-                return vals.median(dim=0)[0]
-            else:
-                medians = torch.zeros(self.d, device=self.device)
-                #ipdb.set_trace()
-                for blockId in range(self.numBlocks):
-                    start = blockId * self.buckets.size()[1]
-                    end = (blockId + 1) * self.buckets.size()[1]
-                    end = min(end, self.d)
-                    vals = torch.zeros(self.r, end-start, device=self.device)
-                    for r in range(self.r):
-                        buckets = self.buckets[r, :end-start]
-                        signs = self.signs[r, :end-start]
-                        offsetBuckets = buckets + self.blockOffsets[blockId]
-                        offsetBuckets %= self.c
-                        offsetSigns = signs * self.blockSigns[blockId]
-                        vals[r] = (self.table[r, offsetBuckets]
-                                    * offsetSigns)
-                    medians[start:end] = vals.median(dim=0)[0]
-                return medians
+                    buckets = self.buckets[r, :end-start]
+                    signs = self.signs[r, :end-start]
+                    offsetBuckets = buckets + self.blockOffsets[blockId]
+                    offsetBuckets %= self.c
+                    offsetSigns = signs * self.blockSigns[blockId]
+                    vals[r] = (self.table[r, offsetBuckets]
+                                * offsetSigns)
+                medians[start:end] = vals.median(dim=0)[0]
+            return medians
 
     def findHHs(self, k=None, thr=None):
         assert((k is None) != (thr is None))
