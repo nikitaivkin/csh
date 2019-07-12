@@ -195,6 +195,14 @@ class CSVec(object):
 
     def _findHHThr(self, thr):
         assert(thr is not None)
+        vals = self._findAllValues()
+        HHs = vals.abs() >= thr
+        return HHs, vals[HHs]
+
+        """ this is a potentially faster way to compute the same thing,
+        but it doesn't play nicely with numBlocks > 1, so for now I'm
+        just using the slower code above
+
         # to figure out which items are heavy hitters, check whether
         # self.table exceeds thr (in magnitude) in at least r/2 of
         # the rows. These elements are exactly those for which the median
@@ -204,13 +212,14 @@ class CSVec(object):
                          - (self.table < -thr).float())
         est = torch.zeros(self.d, device=self.device)
         for r in range(self.r):
-            est += tablefiltered[r,self.buckets[r,:]] * self.signs[r,:]
+            est += tablefiltered[r, self.buckets[r,:]] * self.signs[r, :]
         est = (  (est >=  math.ceil(self.r/2.)).float()
                - (est <= -math.ceil(self.r/2.)).float())
 
         # HHs - heavy coordinates
         HHs = torch.nonzero(est)
         return HHs, self._findValues(HHs)
+        """
 
     def _findValues(self, coords):
         # estimating frequency of input coordinates
