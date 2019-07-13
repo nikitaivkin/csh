@@ -68,7 +68,7 @@ class CSVec(object):
         if device is None:
             device = 'cuda' if torch.cuda.is_available() else 'cpu'
         else:
-            assert(device == "cuda" or device == "cpu")
+            assert("cuda" in device or device == "cpu")
         self.device = device
 
         # this flag indicates that the caller plans to set up
@@ -211,7 +211,10 @@ class CSVec(object):
         Args:
             vec: the vector to be sketched
         """
-        assert(len(vec.size()) == 1 and vec.size()[0] == self.d)
+        try:
+            assert(len(vec.size()) == 1 and vec.size()[0] == self.d), f"Len of {vec} was {len(vec.size())} instead of 1 or size was {vec.size()[0]} instead of {self.d}"
+        except AssertionError:
+            return self.accumulateTable(vec)
 
         # the vector is sketched to each row independently
         for r in range(self.r):
@@ -238,7 +241,10 @@ class CSVec(object):
                                     minlength=self.c
                                    )
 
-
+    def accumulateTable(self, table):
+        assert self.table.size() == table.size(), f"This CSVec is {self.table.size()} but the table is {table.size()}"
+        self.table += table
+    
     def _accumulateCSVec(self, csVec):
         # merges csh sketch into self
         assert(self.d == csVec.d)
