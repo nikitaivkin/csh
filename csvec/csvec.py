@@ -82,12 +82,13 @@ class CSVec(object):
 
         # if we already have these, don't do the same computation
         # again (wasting memory storing the same data several times)
-        if (d, c, r) in cache:
-            self.signs = cache[(d, c, r)]["signs"]
-            self.buckets = cache[(d, c, r)]["buckets"]
+        cacheKey = (d, c, r, numBlocks, device)
+        if cacheKey in cache:
+            self.signs = cache[cacheKey]["signs"]
+            self.buckets = cache[cacheKey]["buckets"]
             if self.numBlocks > 1:
-                self.blockSigns = cache[(d, c, r)]["blockSigns"]
-                self.blockOffsets = cache[(d, c, r)]["blockOffsets"]
+                self.blockSigns = cache[cacheKey]["blockSigns"]
+                self.blockOffsets = cache[cacheKey]["blockOffsets"]
             return
 
         # initialize hashing functions for each row:
@@ -151,11 +152,11 @@ class CSVec(object):
         # tensors
         self.buckets = self.buckets.to(self.device)
 
-        cache[(d, c, r)] = {"signs": self.signs,
-                            "buckets": self.buckets}
+        cache[cacheKey] = {"signs": self.signs,
+                           "buckets": self.buckets}
         if numBlocks > 1:
-            cache[(d, c, r)].update({"blockSigns": self.blockSigns,
-                                     "blockOffsets": self.blockOffsets})
+            cache[cacheKey].update({"blockSigns": self.blockSigns,
+                                    "blockOffsets": self.blockOffsets})
 
     def zero(self):
         """ Set all the entries of the sketch to zero """
@@ -170,7 +171,7 @@ class CSVec(object):
                          numBlocks=self.numBlocks)
         newCSVec.table = copy.deepcopy(self.table)
         global cache
-        cachedVals = cache[(self.d, self.c, self.r)]
+        cachedVals = cache[(self.d, self.c, self.r, self.device)]
         newCSVec.signs = cachedVals["signs"]
         newCSVec.buckets = cachedVals["buckets"]
         if self.numBlocks > 1:
