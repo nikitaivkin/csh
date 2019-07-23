@@ -171,7 +171,7 @@ class CSVec(object):
                          numBlocks=self.numBlocks)
         newCSVec.table = copy.deepcopy(self.table)
         global cache
-        cachedVals = cache[(self.d, self.c, self.r, self.device)]
+        cachedVals = cache[(self.d, self.c, self.r, self.numBlocks, self.device)]
         newCSVec.signs = cachedVals["signs"]
         newCSVec.buckets = cachedVals["buckets"]
         if self.numBlocks > 1:
