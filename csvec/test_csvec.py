@@ -44,7 +44,7 @@ class Base:
             a = CSVec(d=d, c=c, r=r, **self.csvecArgs)
             vec = torch.zeros(d).to(self.device)
             vec[0] = 1
-            a += vec
+            a.accumulateVec(vec)
             # make sure the sketch only has one nonzero entry per row
             for i in range(r):
                 with self.subTest(row=i):
@@ -61,7 +61,7 @@ class Base:
             r = 5
             a = CSVec(d, c, r, **self.csvecArgs)
             vec = torch.rand(d).to(self.device)
-            a += vec
+            a.accumulateVec(vec)
 
             zeros = torch.zeros((r, c)).to(self.device)
             self.assertFalse(torch.allclose(a.table, zeros))
@@ -79,7 +79,7 @@ class Base:
             a = CSVec(d, c, r, **self.csvecArgs)
             vec = torch.rand(d).to(self.device)
 
-            a += vec
+            a.accumulateVec(vec)
 
             with self.subTest(method="topk"):
                 recovered = a.unSketch(k=d)
@@ -100,7 +100,7 @@ class Base:
                 vec = torch.zeros(d).to(self.device)
                 vec[i] = 1
                 sketch = CSVec(d, c, r, **self.csvecArgs)
-                sketch += vec
+                sketch.accumulateVec(vec)
                 summed += sketch
 
             recovered = summed.unSketch(k=d)
@@ -114,7 +114,7 @@ class Base:
 
             vec = torch.randn(d).to(self.device)
             a = CSVec(d, c, r, **self.csvecArgs)
-            a += vec
+            a.accumulateVec(vec)
 
             tol = 0.0001
             self.assertTrue((a.l2estimate() - vec.norm()).abs() < tol)
