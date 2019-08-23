@@ -197,8 +197,7 @@ class CSVec(object):
         """ Returns the sum of self with other
 
         Args:
-            other: either a 1D torch.tensor of size d, or a CSVec with
-                identical values of d, c, and r
+            other: a CSVec with identical values of d, c, and r
         """
         # a bit roundabout in order to avoid initializing a new CSVec
         returnCSVec = copy.deepcopy(self)
@@ -206,21 +205,35 @@ class CSVec(object):
         return returnCSVec
 
     def __iadd__(self, other):
-        """ Accumulates either another sketch, or an unsketched vector
+        """ Accumulates another sketch
 
         Args:
-            other: either a 1D torch.tensor of size d, or a CSVec with
-                identical values of d, c, and r
+            other: a CSVec with identical values of d, c, and r
         """
         if isinstance(other, CSVec):
-            self._accumulateCSVec(other)
-        elif isinstance(other, torch.Tensor):
-            self._accumulateVec(other)
+            # merges csh sketch into self
+            assert(self.d == other.d)
+            assert(self.c == other.c)
+            assert(self.r == other.r)
+            self.table += other.table
         else:
             raise ValueError("Can't add this to a CSVec: {}".format(other))
         return self
 
-    def _accumulateVec(self, vec):
+    def accumulateTable(self, table):
+        """ Adds a CSVec.table to self
+
+        Args:
+            table: the table to be added
+
+        """
+        if table.size() != self.table.size():
+            msg = "Passed in table has size {}, expecting {}"
+            raise ValueError(msg.format(table.size(), self.table.size()))
+
+        self.table += table
+
+    def accumulateVec(self, vec):
         """ Sketches a vector and adds the result to self
 
         Args:
@@ -252,14 +265,6 @@ class CSVec(object):
                                     weights=offsetSigns * vec[start:end],
                                     minlength=self.c
                                    )
-
-
-    def _accumulateCSVec(self, csVec):
-        # merges csh sketch into self
-        assert(self.d == csVec.d)
-        assert(self.c == csVec.c)
-        assert(self.r == csVec.r)
-        self.table += csVec.table
 
     def _findHHK(self, k):
         assert(k is not None)
