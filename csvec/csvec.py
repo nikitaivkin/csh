@@ -162,6 +162,20 @@ class CSVec(object):
         """ Set all the entries of the sketch to zero """
         self.table.zero_()
 
+    def cpu_(self):
+        self.device = "cpu"
+        self.table = self.table.cpu()
+
+    def cuda_(self, device="cuda"):
+        self.device = device
+        self.table = self.table.cuda()
+
+    def half_(self):
+        self.table = self.table.half()
+
+    def float_(self):
+        self.table = self.table.float()
+
     def __deepcopy__(self, memodict={}):
         # don't initialize new CSVec, since that will calculate bc,
         # which is slow, even though we can just copy it over
