@@ -68,7 +68,11 @@ class CSVec(object):
         if device is None:
             device = 'cuda' if torch.cuda.is_available() else 'cpu'
         else:
-            assert("cuda" in device or device == "cpu")
+            if (not isinstance(device, torch.device) and
+                    not ("cuda" in device or device == "cpu")):
+                msg = "Expected a valid device, got {}"
+                raise ValueError(msg.format(device))
+
         self.device = device
 
         # this flag indicates that the caller plans to set up
