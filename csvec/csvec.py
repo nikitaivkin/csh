@@ -212,13 +212,15 @@ class CSVec(object):
         """ Accumulates another sketch
 
         Args:
-            other: a CSVec with identical values of d, c, and r
+            other: a CSVec with identical values of d, c, r, device, numBlocks
         """
         if isinstance(other, CSVec):
             # merges csh sketch into self
             assert(self.d == other.d)
             assert(self.c == other.c)
             assert(self.r == other.r)
+            assert(self.device == other.device)
+            assert(self.numBlocks == other.numBlocks)
             self.table += other.table
         else:
             raise ValueError("Can't add this to a CSVec: {}".format(other))
