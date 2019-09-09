@@ -395,3 +395,23 @@ class CSVec(object):
         # l2 norm esimation from the sketch
         return np.sqrt(torch.median(torch.sum(self.table**2,1)).item())
 
+    @classmethod
+    def median(cls, csvecs):
+        # make sure all CSVecs match
+        d = csvecs[0].d
+        c = csvecs[0].c
+        r = csvecs[0].r
+        device = csvecs[0].device
+        numBlocks = csvecs[0].numBlocks
+        for csvec in csvecs:
+            assert(csvec.d == d)
+            assert(csvec.c == c)
+            assert(csvec.r == r)
+            assert(csvec.device == device)
+            assert(csvec.numBlocks == numBlocks)
+
+        tables = [csvec.table for csvec in csvecs]
+        med = torch.median(torch.stack(tables), dim=0)[0]
+        returnCSVec = copy.deepcopy(csvecs[0])
+        returnCSVec.table = med
+        return returnCSVec

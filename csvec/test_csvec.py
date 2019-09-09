@@ -119,6 +119,20 @@ class Base:
             tol = 0.0001
             self.assertTrue((a.l2estimate() - vec.norm()).abs() < tol)
 
+        def testMedian(self):
+            d = 5
+            c = 10000
+            r = 20
+
+            csvecs = [CSVec(d, c, r, **self.csvecArgs) for _ in range(3)]
+            for i, csvec in enumerate(csvecs):
+                vec = torch.arange(d).float().to(self.device) + i
+                csvec.accumulateVec(vec)
+            median = CSVec.median(csvecs)
+            recovered = median.unSketch(k=d)
+            trueMedian = torch.arange(d).float().to(self.device) + 1
+            self.assertTrue(torch.allclose(recovered, trueMedian))
+
 class TestCaseCPU1(Base.CSVecTestCase):
     def setUp(self):
         # hack to reset csvec's global cache between tests
