@@ -196,7 +196,21 @@ class CSVec(object):
             newCSVec.blockSigns = cachedVals["blockSigns"]
             newCSVec.blockOffsets = cachedVals["blockOffsets"]
         return newCSVec
+    
+    def __imul__(self, other):
+        if isinstance(other, int) or isinstance(other, float):
+            self.table = self.table.mul_(other)
+        else:
+            raise ValueError(f"Can't multiply a CSVec by {other}")
+        return self
 
+   def __truediv__(self, other):
+        if isinstance(other, int) or isinstance(other, float):
+            self.table = self.table.div_(other)
+        else:
+            raise ValueError(f"Can't divide a CSVec by {other}")
+        return self
+    
     def __add__(self, other):
         """ Returns the sum of self with other
 
