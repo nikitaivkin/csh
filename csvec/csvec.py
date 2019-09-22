@@ -204,7 +204,7 @@ class CSVec(object):
             raise ValueError(f"Can't multiply a CSVec by {other}")
         return self
 
-   def __truediv__(self, other):
+    def __truediv__(self, other):
         if isinstance(other, int) or isinstance(other, float):
             self.table = self.table.div_(other)
         else:
