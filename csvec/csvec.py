@@ -292,9 +292,9 @@ class CSVec(object):
         #vals = self._findValues(tokens)
         vals = self._findAllValues()
 
-        # sort is faster than torch.topk...
-        HHs = torch.sort(vals**2)[1][-k:]
-        #HHs = torch.topk(vals**2, k, sorted=False)[1]
+        # torch.topk is many times faster than torch.sort
+        #HHs = torch.sort(vals**2)[1][-k:]
+        HHs = torch.topk(vals**2, k, sorted=False)[1]
         return HHs, vals[HHs]
 
     def _findHHThr(self, thr):
