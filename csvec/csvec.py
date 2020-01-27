@@ -293,8 +293,15 @@ class CSVec(object):
         vals = self._findAllValues()
 
         # sort is faster than torch.topk...
-        HHs = torch.sort(vals**2)[1][-k:]
-        #HHs = torch.topk(vals**2, k, sorted=False)[1]
+        #HHs = torch.sort(vals**2)[1][-k:]
+
+        # topk on cuda returns what looks like uninitialized memory if
+        # vals has nan values in it
+        # saving to a zero-initialized output array instead of using the
+        # output of topk appears to solve this problem
+        outVals = torch.zeros(k, device=vals.device)
+        HHs = torch.zeros(k, device=vals.device).long()
+        torch.topk(vals**2, k, sorted=False, out=(outVals, HHs))
         return HHs, vals[HHs]
 
     def _findHHThr(self, thr):
