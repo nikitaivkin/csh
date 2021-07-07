@@ -162,7 +162,7 @@ class CSVec(object):
             cache[cacheKey].update({"blockSigns": self.blockSigns,
                                     "blockOffsets": self.blockOffsets})
 
-    def zero(self):
+    def zero_(self):
         """ Set all the entries of the sketch to zero """
         self.table.zero_()
 
